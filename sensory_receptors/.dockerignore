@@ -1,0 +1,7 @@
+/app/harvester_env/
+/app/harvester2_env/
+
+.venv
+venv
+.git
+__pycache__

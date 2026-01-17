@@ -1,0 +1,1 @@
+/usr/local/bin/c++ CMakeFiles/seismic_engine.dir/src/seismic_ingest.cpp.o -o seismic_engine  -lpqxx -lhiredis -lpthread 

@@ -1,0 +1,15 @@
+numpy
+pandas
+psycopg2-binary
+scipy
+sqlalchemy
+redis
+obspy
+tensorflow==2.15.0
+scikit-learn
+matplotlib
+tqdm
+requests
+shapely
+xarray
+cfgrib

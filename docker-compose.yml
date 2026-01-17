@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # ------------------- Sensory Receptors (C++ Data Streams) -------------------
+  sensory_receptors:
+    build: ./sensory_receptors
+    container_name: sensory_receptors
+    volumes:
+      - ./shared_data:/shared
+    environment:
+      - DB_HOST=hippocampus
+      - DB_PORT=5432
+      - DB_NAME=rocco_commodities
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - REDIS_HOST=corpus_callosum
+    depends_on:
+      - hippocampus
+      - corpus_callosum
+    networks:
+      - rocco_net
+    tty: true
+    restart: always
+
+  # ----------------- Frontal Lobe (Python Controlled AI Models) ----------------
+  frontal_lobe:
+    build: ./frontal_lobe
+    shm_size: '5gb'
+    container_name: frontal_lobe
+    volumes:
+      - ./frontal_lobe:/app
+      - ./shared_data:/shared 
+    environment:
+      - POSTGRES_HOST=hippocampus
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=rocco_commodities
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASS}
+      - REDIS_HOST=corpus_callosum
+    depends_on:
+      - hippocampus
+      - corpus_callosum
+    networks:
+      - rocco_net
+    tty: true
+
+# ------------------- Thalamus (C++ State & Fusion Relay) -------------------
+  thalamus:
+    build: ./thalamus         
+    container_name: thalamus
+    environment:
+      - DB_HOST=hippocampus
+      - DB_NAME=rocco_commodities
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - REDIS_HOST=corpus_callosum
+    depends_on:
+      - hippocampus
+      - corpus_callosum
+    networks:
+      - rocco_net
+    restart: always
+
+  # ----------------- Hippocampus (Postgres/gis SQL Database) -----------------
+  hippocampus:
+    image: postgis/postgis:15-3.3
+    container_name: hippocampus
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: rocco_commodities
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - rocco_net
+    ports:
+      - "5432:5432"
+
+  # ------------------ Corpus Callosum (Redis Messaging Relay) ------------------
+  corpus_callosum:
+    image: redis:alpine
+    container_name: corpus_callosum
+    networks:
+        - rocco_net
+
+volumes:
+  postgres_data:
+
+networks:
+  rocco_net:
+    driver: bridge
