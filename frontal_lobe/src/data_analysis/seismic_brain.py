@@ -67,13 +67,13 @@ def get_station_coords(station_id):
 
         with db_conn.cursor() as cur:
             cur.execute(
-                "SELECT latitude, longitude FROM earthquake_stations WHERE network = %s AND station = %s", 
+                "SELECT latitude, longitude, sensitivity, units FROM earthquake_stations WHERE network = %s AND station = %s", 
                 (net.strip(), sta.strip()))
             res = cur.fetchone()
-            return (float(res[0]), float(res[1])) if res else (None, None)
+            return (float(res[0]), float(res[1]), float(res[2]), str(res[3])) if res else (None, None, None, None)
     except Exception as e:
         print(f"[ERROR] DB Lookup Error for {station_id}: {e}")
-        return None, None
+        return None, None, None, None
 
 
 
@@ -91,13 +91,9 @@ Called by: start_brain_listener
 Calls: get_station_coords
 """
 def process_inference(station_id, data_array):
-    max_amp = np.max(np.abs(data_array))
+    detrended_data = data_array - np.mean(data_array)
+    max_amp = np.max(np.abs(detrended_data))
     scaled_data = data_array / (max_amp + 1e-7) if max_amp > 0 else data_array 
-    mmi = 3.47 * math.log10(max_amp) + 2.35 #Conversion to intensity from PGV
-    energy_ratio = np.std(scaled_data[:500]) / (np.std(scaled_data[500:]) + 1e-7)
-    is_sustained_noise = 0.7 < energy_ratio < 1.3
-    if is_sustained_noise:
-        return
 
     input_data = scaled_data.reshape(1, SAMPLE_COUNT, 1)
     prediction = model.predict(input_data, verbose=0)[0]
@@ -112,12 +108,27 @@ def process_inference(station_id, data_array):
             })
 
     if detections:
-        lat, lon = get_station_coords(station_id)
+        lat, lon, sensitivity, units = get_station_coords(station_id)
         timestamp = int(round(time.time() * 1000))
         entity_id = f"{station_id}_{timestamp}"
         if lat and lon:
             for detection in detections: 
                 if detection["class"] == "Earthquake":
+                    #Intensity Calculation (Counts/Sensitivity - m/s -> *100 = cm/s)
+                    if not sensitivity or sensitivity == 0:
+                        print(f"[ERROR] {station_id} has invalid sensitivity: {sensitivity}")
+                        continue
+                    if "m/s" not in units.lower():
+                        print(f"[DEBUG] Skipping {station_id}: Units are {units}, not m/s")
+                        continue
+                    pgv = (max_amp / sensitivity) * 100
+                    mmi = 3.47 * math.log10(max(pgv, 1e-9)) + 2.35
+                    if mmi == 0.0:
+                        print("[SEISMIC MONITORS] Intensity is ")
+                        continue
+                    mmi = max(1.0, min(12.0, round(float(mmi), 1)))
+                    if mmi == 1.0 or mmi == 12.0:
+                        detection["conf"] = 0.00
                     signal_packet = {
                         "entity_id": entity_id,
                         "entity_type": "earthquake",
