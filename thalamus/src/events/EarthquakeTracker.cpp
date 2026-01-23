@@ -105,8 +105,8 @@ float EarthquakeTracker::run_zr_formula() {
 
 // Controller for calculating staleness of signals (to remove old ones)
 bool EarthquakeTracker::is_stale(long long current_time) const {
-    const long long TWENTY_FOUR_HOURS_MS = 86400000;
-    return (current_time - current_state.update_time) > TWENTY_FOUR_HOURS_MS;
+    const long long ONE_HOUR_MS = 3600000;
+    return (current_time - current_state.update_time) > ONE_HOUR_MS;
 }
 
 long long EarthquakeTracker::get_last_update_time() const {
@@ -132,7 +132,15 @@ json EarthquakeTracker::to_json() const {
         json p;
         p["ts"] = pkt.timestamp;
         p["reliability"] = pkt.reliability;
-        p["data"] = pkt.data;
+        
+        json data_obj = json::object();
+        if (pkt.data.is_object()) {
+            data_obj["mag"] = pkt.data.value("mag", 0.0f);
+            data_obj["mmi"] = pkt.data.value("mmi", 0.0f);
+            data_obj["lat"] = pkt.data.value("lat", 0.0f);
+            data_obj["lon"] = pkt.data.value("lon", 0.0f);
+        }
+        p["data"] = data_obj;
         j["history_log"].push_back(p);
     }
     

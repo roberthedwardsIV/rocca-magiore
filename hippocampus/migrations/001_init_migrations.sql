@@ -141,3 +141,23 @@ CREATE INDEX idx_icao_status ON flight_legs (icao24, status);
 CREATE UNIQUE INDEX idx_unique_active_icao 
 ON flight_legs (icao24) 
 WHERE status = 'ACTIVE';
+
+
+CREATE TABLE IF NOT EXISTS asset_supply_mapping (
+    asset_id INTEGER REFERENCES assets(id),
+    line_id INTEGER,
+    PRIMARY KEY (asset_id, line_id)
+);
+CREATE TABLE IF NOT EXISTS asset_states (
+    asset_id INTEGER PRIMARY KEY,
+    op_health FLOAT,
+    fin_health FLOAT,
+    threat_level FLOAT,
+    last_update BIGINT
+);
+CREATE TABLE IF NOT EXISTS supply_states (
+    line_id INTEGER PRIMARY KEY,
+    type VARCHAR(50),
+    state_data JSONB,
+    last_update BIGINT
+);

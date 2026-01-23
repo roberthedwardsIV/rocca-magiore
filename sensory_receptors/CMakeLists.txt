@@ -14,3 +14,5 @@ link_directories(${PQXX_LIBRARY_DIRS} ${HIREDIS_LIBRARY_DIRS})
 add_executable(seismic_engine src/seismic_ingest.cpp)
 
 target_link_libraries(seismic_engine ${PQXX_LIBRARIES} ${HIREDIS_LIBRARIES} pthread)
+
+add_subdirectory(src/data_sources/med_streams)
