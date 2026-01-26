@@ -56,11 +56,17 @@ std::shared_ptr<BaseEvent> GlobalRegistry::get_event(const std::string& id) {
     return (it != event_map.end()) ? it->second : nullptr;
 }
 
-std::string GlobalRegistry::find_event_by_proximity(float lat, float lon, long long timestamp, float dist_km, long long time_ms) {
+std::string GlobalRegistry::find_event_by_proximity(float lat, float lon, long long timestamp, const std::string& entity_type) {
+    float radius_km = 100.0f;
+    long long time_ms = 180000LL;
     std::lock_guard<std::mutex> lock(event_mtx);
+
     for (auto const& [id, event] : event_map) {
+        std::string type = event->entity_type;
+        if (type != entity_type) continue;
+
         float d = calculate_distance(lat, lon, event->get_lat(), event->get_lon());
-        if (d > dist_km) continue;
+        if (d > radius_km) continue;
 
         long long t_diff = std::abs(timestamp - event->get_start_time());
         if (t_diff > time_ms) continue;

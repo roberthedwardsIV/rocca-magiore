@@ -15,7 +15,7 @@
 class GlobalRegistry {
 public:
     static std::shared_ptr<BaseEvent> get_event(const std::string& entity_id);
-    static std::string find_event_by_proximity(float lat, float lon, long long timestamp, float dist_km = 150.0f, long long time_ms = 180000);
+    static std::string find_event_by_proximity(float lat, float lon, long long timestamp, const std::string& entity_type);
     static void register_event(const std::string& entity_id, std::shared_ptr<BaseEvent> event);
     static void for_each_event(std::function<void(const std::string&, std::shared_ptr<BaseEvent>)> func);
     static void remove_event(const std::string& entity_id);

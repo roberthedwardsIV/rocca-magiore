@@ -10,7 +10,7 @@ using json = nlohmann::json;
 class BaseEvent {
 public:
     virtual ~BaseEvent() = default;
-
+ 
     // Every specific class will implement its own version of these
     virtual void process_packet(const json& sig) = 0;
     virtual float calculate_zr_score() = 0;

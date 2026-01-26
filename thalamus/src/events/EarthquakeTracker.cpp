@@ -118,6 +118,7 @@ json EarthquakeTracker::to_json() const {
     json j;
     
     j["entity_id"] = entity_id;
+    j["entity_type"] = entity_type;
     j["final_mag"] = current_state.magnitude;
     j["final_intensity"] = current_state.intensity;
     j["uncertainty"] = current_state.uncertainty;

@@ -1,3 +1,8 @@
+/**
+* Archiver.cpp: runs the reaper (that archives stale signals by saving them to db)
+*               and runs the snapshotter (that takes a global state snapshot every
+*               5 minutes)
+*/
 #include "Archiver.hpp"
 #include "GlobalRegistry.hpp"
 #include "DatabaseManager.hpp"

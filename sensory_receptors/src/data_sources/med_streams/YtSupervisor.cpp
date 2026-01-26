@@ -9,10 +9,8 @@ int main() {
     std::vector<std::unique_ptr<YtStream>> receptors;
 
     // Streams to listen to (UPDATE!!!):
-    receptors.push_back(std::make_unique<YtStream>("CNN", "https://www.youtube.com/watch?v=EXAMPLE_CNN"));
-    receptors.push_back(std::make_unique<YtStream>("AL_JAZEERA", "https://www.youtube.com/watch?v=gCNeDWCI0vo"));
-    receptors.push_back(std::make_unique<YtStream>("SKY_NEWS", "https://www.youtube.com/watch?v=EXAMPLE_SKY"));
-
+    receptors.push_back(std::make_unique<YtStream>("CBS", "https://www.youtube.com/watch?v=C9hFaWUIbG4"));
+    
 
 
 

@@ -1,10 +1,13 @@
 /**
-* Propagator.cpp: 
+* Propagator.cpp: according the signal type, this will spread the new signal across
+*                 all relevant assets and supply lines to build interdependent network
+*                 as new signals arise at differing levels.
 */
 #include "Propagator.hpp"
 #include "GlobalRegistry.hpp"
 #include "DatabaseManager.hpp"
 #include <iostream>
+#include <cmath>
 
 void Propagator::propagate_event_impact(const std::string& event_id) {
     auto event = GlobalRegistry::get_event(event_id);
@@ -12,23 +15,40 @@ void Propagator::propagate_event_impact(const std::string& event_id) {
 
     float lat = event->get_lat();
     float lon = event->get_lon();
-
-    notify_assets_of_seismic(event_id, lat, lon);
-    notify_supply_of_seismic(event_id, lat, lon);
+    std::string event_type = event->entity_type;
+    if (event_type == "earthquake") {
+        notify_assets_of_seismic(event_id, lat, lon);
+        notify_supply_of_seismic(event_id, lat, lon);
+    }
 }
 
 void Propagator::notify_assets_of_seismic(const std::string& event_id, float event_lat, float event_lon) {
+    auto event = GlobalRegistry::get_event(event_id);
+    if (!event) return;
+
+    // function in DatabaseManager that will search for assets in our assets table within 100 km of the event
     auto impacted_assets = check_asset_exposure(event_lat, event_lon);
     
+    // all impacted assets get this new signal pushed to their state if within the radius
     for (const auto& exposure : impacted_assets) {
         auto asset = GlobalRegistry::get_asset(exposure.asset_id);
         if (!asset) continue;
 
         json impact_pkt;
         impact_pkt["category"] = "threat";
-        impact_pkt["severity"] = 1.0f / (1.0f + exposure.dist_km); 
-        impact_pkt["reliability"] = 0.85f;
-        impact_pkt["timestamp"] = 0LL; 
+
+        // Intensity drops linearly as the Log of the distance increases.
+        float distance = std::log(exposure.dist_km + 0.01);
+        impact_pkt["severity"] = 1.0f / distance; 
+
+        // Reliability derrived from current uncertainty of earthquake tracker
+        json evt_data = event->to_json(); 
+        float uncertainty = evt_data.value("uncertainty", 0.5f); 
+        float reliability = 1.0 - uncertainty;
+        impact_pkt["reliability"] = reliability;
+
+        //Timestamp derived from the event last update
+        impact_pkt["timestamp"] = event->get_last_update_time(); 
 
         asset->process_packet(impact_pkt);
         
@@ -37,6 +57,9 @@ void Propagator::notify_assets_of_seismic(const std::string& event_id, float eve
 }
 
 void Propagator::notify_supply_of_seismic(const std::string& event_id, float event_lat, float event_lon) {
+    auto event = GlobalRegistry::get_event(event_id);
+    if (!event) return;
+
     auto impacted_lines = check_supply_exposure(event_lat, event_lon);
     
     for (const auto& exposure : impacted_lines) {
@@ -45,8 +68,19 @@ void Propagator::notify_supply_of_seismic(const std::string& event_id, float eve
 
         json impact_pkt;
         impact_pkt["category"] = "integrity";
-        impact_pkt["severity"] = 1.0f / (1.0f + exposure.dist_km);
-        impact_pkt["reliability"] = 0.90f;
+
+        // Intensity drops linearly as the Log of the distance increases.
+        float distance = std::log(exposure.dist_km + 0.01);
+        impact_pkt["severity"] = 1.0f / distance; 
+
+        // Reliability derrived from current uncertainty of earthquake tracker
+        json evt_data = event->to_json(); 
+        float uncertainty = evt_data.value("uncertainty", 0.5f); 
+        float reliability = 1.0 - uncertainty;
+        impact_pkt["reliability"] = reliability;
+
+        //Timestamp derived from the event last update
+        impact_pkt["timestamp"] = event->get_last_update_time();
         
         line->process_packet(impact_pkt);
 

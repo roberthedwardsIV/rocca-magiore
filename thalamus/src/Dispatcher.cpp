@@ -37,14 +37,13 @@ void Dispatcher::route_signal(const json& sig) {
     }
 }
 
-
+ 
 void Dispatcher::handle_event_signal(const json& sig) {
     std::string id = sig.value("entity_id", "unknown");
     float lat = sig["data"].value("lat", 0.0f);
     float lon = sig["data"].value("lon", 0.0f);
     long long timestamp = sig.value("timestamp", 0LL);
-    float radius_km = 100.0f;
-    long long time_ms = 180000LL;
+    
 
     std::shared_ptr<BaseEvent> target = nullptr;
 
@@ -53,7 +52,7 @@ void Dispatcher::handle_event_signal(const json& sig) {
 
     // PROXIMITY REGISTRY SEARCH (TIME+DIST MATCHES)
     if (!target) {
-        std::string proximal_id = GlobalRegistry::find_event_by_proximity(lat, lon, timestamp, radius_km, time_ms);
+        std::string proximal_id = GlobalRegistry::find_event_by_proximity(lat, lon, timestamp, "earthquake");
         if (!proximal_id.empty()) {
             target = GlobalRegistry::get_event(proximal_id);
             id = proximal_id; 
@@ -62,7 +61,7 @@ void Dispatcher::handle_event_signal(const json& sig) {
 
     // DATABASE ARCHIVE SEARCH (TIME+DIST MATCHES)
     if (!target) {
-        json archived = DatabaseManager::query_database_for_event(id, lat, lon, timestamp, "earthquake");
+        json archived = query_database_for_event(id, lat, lon, timestamp, "earthquake");
         if (!archived.is_null()) {
             target = std::make_shared<EarthquakeTracker>(archived);
             GlobalRegistry::register_event(id, target);

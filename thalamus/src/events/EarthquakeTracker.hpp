@@ -38,7 +38,7 @@ public:
     float get_lat() const override { return current_state.lat; }
     float get_lon() const override { return current_state.lon; }
     long long get_start_time() const override { return current_state.event_time; }
-    
+
     // Reaper & Archiving Functions
     bool is_stale(long long current_time) const override;
     long long get_last_update_time() const override;

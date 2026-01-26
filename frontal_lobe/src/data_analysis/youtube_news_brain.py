@@ -2,33 +2,37 @@ import asyncio
 import redis.asyncio as redis
 import json
 import spacy
+import asyncpg
 from gliner import GLiNER
 from datetime import datetime
 
 nlp = spacy.load("en_core_web_sm")
 model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")
 
-TARGET_LABELS = ["earthquake", "mine", "refinery", "port", "location", "magnitude", "intensity"]
+TARGET_LABELS = ["earthquake", "military_conflict", "mine", "refinery", "port", "location", "magnitude", "intensity", "damage_extent"]
 
 class YoutubeNewsSignalProcessor:
-    def __init__(self, spatial_index_path=None):
+    def __init__(self, db_config):
         self.buffers = {}
-        # Assuming a local SQLite or GeoPackage for sub-millisecond coordinate lookups
-        self.spatial_index_path = spatial_index_path
+        self.db_config = db_config
+        self.db_pool = None
 
-    def get_local_coordinates(self, location_name):
-        """
-        High-frequency local lookup. 
-        In production, this queries a local KV store or SQLite R-Tree.
-        """
-        # Placeholder for your local fast-lookup logic (e.g., DuckDB or SQLite)
-        # return db.execute("SELECT lat, lon FROM world_cities WHERE name = ?", (location_name,))
-        return [0.0, 0.0] # Logic replaced by your local high-speed index
+    async def initialize(self):
+        self.db_pool = await asyncpg.create_pool(**self.db_config)
 
-    def parse_signal_protocol(self, text, entities):
-        """
-        Extracts specific metrics based on the detected event/asset type.
-        """
+    async def get_local_coordinates(self, location_name):
+        if not self.db_pool:
+            return None
+        async with self.db_pool.acquire() as conn:
+            row = await conn.fetchrow('''
+                SELECT ST_X(coords::geometry) as lon, ST_Y(coords::geometry) as lat 
+                FROM spatial_ref.world_cities 
+                WHERE name = $1 
+                ORDER BY population DESC LIMIT 1
+            ''', location_name)
+            return [row['lat'], row['lon']] if row else None
+
+    def parse_signal_protocol(self, entities):
         signal = {
             "source_timestamp": datetime.utcnow().isoformat(),
             "event_type": None,
@@ -37,10 +41,8 @@ class YoutubeNewsSignalProcessor:
             "metrics": {}
         }
 
-        # 1. Primary Classification
         for ent in entities:
             lbl, val = ent['label'], ent['text']
-            
             if lbl in ["earthquake", "hurricane", "military_conflict"]:
                 signal["event_type"] = lbl
             elif lbl in ["mine", "refinery", "port"]:
@@ -48,19 +50,15 @@ class YoutubeNewsSignalProcessor:
             elif lbl == "location":
                 signal["spatial"]["name"] = val
 
-        # 2. Event-Specific Protocols (Magnitude, Intensity, etc.)
         if signal["event_type"] == "earthquake":
             mags = [e['text'] for e in entities if e['label'] == "magnitude"]
             if mags: signal["metrics"]["magnitude"] = mags[0]
+            ints = [e['text'] for e in entities if e['label'] == "intensity"]
+            if ints: signal["metrics"]["intensity"] = ints[0]
 
-        # 3. Asset-Specific Protocols (Damage Assessment)
         if signal["detected_assets"]:
             damages = [e['text'] for e in entities if e['label'] == "damage_extent"]
             if damages: signal["metrics"]["damage_severity"] = damages[0]
-
-        # 4. High-Speed Local Geocoding
-        if signal["spatial"]["name"]:
-            signal["spatial"]["coords"] = self.get_local_coordinates(signal["spatial"]["name"])
 
         return signal
 
@@ -68,34 +66,40 @@ class YoutubeNewsSignalProcessor:
         ch_name = channel.decode()
         fragment = data.decode().strip()
         
-        # Buffer fragments into coherent sentences
         if ch_name not in self.buffers: self.buffers[ch_name] = ""
         self.buffers[ch_name] += f" {fragment}"
         
-        # Process once context is sufficient (sentence boundary)
         if any(mark in fragment for mark in [".", "!", "?"]):
             context = self.buffers[ch_name].strip()
             self.buffers[ch_name] = ""
             
-            # Execute NLP in thread pool to prevent blocking the Redis consumer
             loop = asyncio.get_running_loop()
-            signal = await loop.run_in_executor(None, self.process_text_sync, context)
+            entities = await loop.run_in_executor(None, self.process_text_sync, context)
+            signal = self.parse_signal_protocol(entities)
             
             if signal["event_type"] or signal["detected_assets"]:
-                # Post the signal back to the raw_signals bus
+                if signal["spatial"]["name"]:
+                    signal["spatial"]["coords"] = await self.get_local_coordinates(signal["spatial"]["name"])
                 await redis_client.publish("raw_signals", json.dumps(signal))
 
     def process_text_sync(self, text):
-        entities = model.predict_entities(text, TARGET_LABELS, threshold=0.45)
-        return self.parse_signal_protocol(text, entities)
+        return model.predict_entities(text, TARGET_LABELS, threshold=0.45)
 
 async def run_processor():
-    processor = YoutubeNewsSignalProcessor()
-    # Using your specific corpus_collosum host
+    db_config = {
+        'user': 'postgres',
+        'password': 'your_password',
+        'database': 'SeismicMonitor',
+        'host': 'your_postgres_host'
+    }
+    
+    processor = YoutubeNewsSignalProcessor(db_config)
+    await processor.initialize()
+    
     r = await redis.from_url("redis://corpus_collosum:6379")
     pubsub = r.pubsub()
-    
     await pubsub.psubscribe("raw:news:*")
+    
     print(f"[{datetime.now()}] YT News Signal Processor Online...")
 
     async for message in pubsub.listen():
