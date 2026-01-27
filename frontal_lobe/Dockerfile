@@ -26,7 +26,8 @@ ENV PYTHONUNBUFFERED=1
 RUN printf "#!/bin/bash\n\
 cd /app\n\
 python3 src/data_analysis/seismic_brain.py &\n\
-python3 src/data_analysis/radio_news_brain.py" > /start_brains.sh
+python3 src/data_analysis/radio_news_brain.py &\n\
+python3 src/data_analysis/twitter_recon_brain.py" > /start_brains.sh
 
 RUN chmod +x /start_brains.sh
 

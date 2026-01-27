@@ -57,7 +57,8 @@ RUN rm -rf build && mkdir build && cd build && \
 # 7. Update Startup Script to run Radio Supervisor instead of YT
 RUN echo "#!/bin/bash\n\
 ./build/seismic_engine &\n\
-./build/src/data_sources/med_streams/radio_supervisor" > start.sh
+./build/src/data_sources/med_streams/radio_supervisor &\n\
+./build/twitter_recon" > start.sh
 
 RUN chmod +x start.sh
 CMD ["./start.sh"]

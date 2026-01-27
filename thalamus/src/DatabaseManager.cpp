@@ -24,7 +24,19 @@ void save_to_database(const json& state) {
         pqxx::connection C(conn_str);
         pqxx::work W(C);
         std::string type = state.value("entity_type", "unknown");
-        std::string id = state.value("entity_id", state.value("asset_id", state.value("line_id", "unknown")));
+        std::string id;
+        if (state.contains("entity_id")) {
+            // Earthquakes have string IDs
+            id = state["entity_id"].get<std::string>();
+        } else if (state.contains("asset_id")) {
+            // Assets have integer IDs -> Convert to string
+            id = std::to_string(state["asset_id"].get<int>());
+        } else if (state.contains("line_id")) {
+            // Supply Lines have integer IDs -> Convert to string
+            id = std::to_string(state["line_id"].get<int>());
+        } else {
+            id = "unknown";
+        }
 
         if (type == "earthquake") {
             long long ts = state.value("start_time", 0LL);

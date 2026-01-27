@@ -11,6 +11,25 @@
 #include "events/EarthquakeTracker.hpp"
 #include "Propagator.hpp"
 #include <iostream>
+#include <hiredis/hiredis.h>
+
+void trigger_twitter_recon(const std::string& id, const std::string& type, float lat, float lon, long long ts) {
+    redisContext* c = redisConnect("corpus_callosum", 6379);
+    if (c && !c->err) {
+        json task;
+        task["task_id"] = id;       
+        task["type"] = type;        
+        task["lat"] = lat;
+        task["lon"] = lon;
+        task["timestamp"] = ts;
+
+        std::string payload = task.dump();
+        redisCommand(c, "PUBLISH twitter_recon_tasks %s", payload.c_str());
+        
+        redisFree(c);
+        std::cout << "[DISPATCHER] Triggered " << type << " recon for " << id << std::endl;
+    }
+}
 
 void Dispatcher::route_signal(const json& sig) {
     std::string type = sig.value("entity_type", "unknown");
@@ -73,6 +92,10 @@ void Dispatcher::handle_event_signal(const json& sig) {
         std::cout << "[DISPATCHER] Spawning new EarthquakeTracker: " << id << std::endl;
         target = std::make_shared<EarthquakeTracker>(sig);
         GlobalRegistry::register_event(id, target);
+
+        //CALLS TWITTER RECON TO VERIFY EARTHQUAKE SIGNAL
+        trigger_twitter_recon(id, "earthquake", lat, lon, timestamp);
+
     } // else if {other event signal types to be added here once built}
 
     if (target) {
