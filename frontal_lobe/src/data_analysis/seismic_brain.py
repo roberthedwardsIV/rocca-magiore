@@ -143,7 +143,12 @@ def process_inference(station_id, data_array):
                     r_bus.lpush("raw_signals", json.dumps(signal_packet))
                     print(f"[Seismic Monitor Stream] Earthquake {entity_id} data sent to Redis.")
 
-                    
+                elif detection["class"].startswith("Logistics"): 
+                    #supply-line geometries (line_id, line_name, line_type, geom)
+                    continue
+                    #see if this logistics blip is on one of our supply line assets
+
+                    #if so -> we send a raw_signal to the corresponding class with the correct data fields as needed
                 else:
                     #add additional class processing here once ready, right now will just report earthquake data/signals
                     continue

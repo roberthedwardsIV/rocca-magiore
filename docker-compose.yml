@@ -37,6 +37,8 @@ services:
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASS}
       - REDIS_HOST=corpus_callosum
+      - HF_TOKEN=REMOVED
+      - PYTHONUNBUFFERED=1
     depends_on:
       - hippocampus
       - corpus_callosum
