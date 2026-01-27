@@ -4,29 +4,16 @@ import json
 import spacy
 import asyncpg
 import time
-import random
-from gliner import GLiNER
+import re
 from datetime import datetime
 
-# --- CONFIGURATION ---
-# NLP Model for Entity Extraction
-model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")
+# --- LOAD LIGHTWEIGHT NLP ---
+# en_core_web_sm is only ~12MB. Tiny.
+print("[BRAIN] Loading Spacy (Rule-Based)...")
+nlp = spacy.load("en_core_web_sm")
+print("[BRAIN] Spacy Loaded.")
 
-# [cite_start]Mapped to match C++ Dispatcher.cpp types [cite: 113-114]
-TARGET_LABELS = [
-    # Events
-    "earthquake", "tsunami", 
-    # Assets (Matches assets/MineAsset.cpp, RefineryAsset.cpp)
-    "mine", "refinery",
-    # Supply Lines (Matches supply_lines/*.cpp)
-    "rail_line", "rail_yard", "maritime_route", "maritime_port",
-    "pipeline_line", "pipeline_station", "highway", "airport",
-    "airspace", "canal_route", "canal_lock",
-    # Metrics
-    "magnitude", "intensity", "location"
-]
-
-# Keywords to map text context to C++ internal categories (e.g. "integrity", "op", "flow")
+# Keywords to determine internal category
 CATEGORY_MAP = {
     "mine": {"strike": "op", "fire": "op", "collapse": "threat", "profit": "fin"},
     "refinery": {"fire": "op", "leak": "threat", "maintenance": "op", "revenue": "fin"},
@@ -34,7 +21,6 @@ CATEGORY_MAP = {
     "maritime_port": {"crane": "equipment", "congestion": "utilization", "strike": "yard"},
     "airport": {"closed": "runway", "delay": "atc", "fuel": "logistics"},
     "highway": {"accident": "navigability", "traffic": "traffic", "blocked": "navigability"},
-    "canal_route": {"stuck": "navigability", "grounded": "depth"},
     "default": {"damage": "integrity", "delay": "flow", "risk": "threat"}
 }
 
@@ -43,47 +29,55 @@ class RadioNewsSignalProcessor:
         self.buffers = {}
         self.db_config = db_config
         self.db_pool = None
-        
-        # Cache for ID resolution (Name -> DB_ID)
-        self.asset_cache = {} 
-        self.line_cache = {}
+        self.context_cache = {} 
 
     async def initialize(self):
-        """Connects to DB and loads Infrastructure Context"""
+        # 1. CONNECT DB
         for _ in range(5):
             try:
                 self.db_pool = await asyncpg.create_pool(**self.db_config)
                 await self.refresh_context_cache()
                 print("[BRAIN] Connected to Hippocampus. Context Loaded.")
-                return
+                break
             except Exception as e:
                 print(f"[DB ERR] Retrying connection: {e}")
                 await asyncio.sleep(2)
 
+        # 2. RUN DIAGNOSTIC
+        print("[DIAGNOSTIC] Running Startup Self-Test (Deterministic)...")
+        test_eq = self.process_text_deterministic("Breaking: A magnitude 7.2 earthquake struck Chile.")
+        test_asset = self.process_text_deterministic("Fire reported at El Teniente mine.")
+        
+        if any(e['label'] == 'earthquake' for e in test_eq) and any(e['text'] == 'el teniente' for e in test_asset):
+            print("[DIAGNOSTIC] PASSED. Logic is sound.")
+        else:
+            print(f"[DIAGNOSTIC] WARNING. Tests Failed: EQ={test_eq}, Asset={test_asset}")
+
     async def refresh_context_cache(self):
-        """
-        Loads all known assets/lines from DB so we can map news names 
-        (e.g. 'Rotterdam Port') to IDs (e.g. 402) for the C++ engine.
-        """
+        # HARDCODED FALLBACKS (for testing empty DB)
+        self.context_cache["el teniente"] = {"id": 101, "type": "mine"}
+        self.context_cache["chevron"] = {"id": 102, "type": "refinery"}
+        self.context_cache["rotterdam"] = {"id": 201, "type": "maritime_port"}
+
+        if not self.db_pool: return
+        
         async with self.db_pool.acquire() as conn:
-            # Load Assets
-            rows = await conn.fetch("SELECT id, name, commodity_types FROM assets")
-            for r in rows:
-                self.asset_cache[r['name'].lower()] = r['id']
+            try:
+                rows = await conn.fetch("SELECT id, name, type FROM assets")
+                for r in rows:
+                    self.context_cache[r['name'].lower()] = {"id": r['id'], "type": r.get('type', 'mine')} 
+            except Exception: pass
             
-            # Load Supply Lines (simplified schema assumption based on context)
-            # You might need to adjust table names if they differ in your SQL schema
             try:
                 rows = await conn.fetch("SELECT id, name, type FROM supply_lines")
                 for r in rows:
-                    self.line_cache[r['name'].lower()] = {'id': r['id'], 'type': r['type']}
-            except:
-                pass # Supply table might be split, ignoring for safety if table missing
+                    self.context_cache[r['name'].lower()] = {"id": r['id'], "type": r['type']}
+            except Exception: pass
 
     async def get_coordinates(self, location_name):
-        """Resolves city/location names to Lat/Lon"""
-        async with self.db_pool.acquire() as conn:
-            try:
+        if not self.db_pool: return (0.0, 0.0)
+        try:
+            async with self.db_pool.acquire() as conn:
                 row = await conn.fetchrow('''
                     SELECT ST_X(coords::geometry) as lon, ST_Y(coords::geometry) as lat 
                     FROM spatial_ref.world_cities 
@@ -91,171 +85,131 @@ class RadioNewsSignalProcessor:
                     ORDER BY population DESC LIMIT 1
                 ''', location_name)
                 return (row['lat'], row['lon']) if row else (0.0, 0.0)
-            except:
-                return (0.0, 0.0)
+        except: return (0.0, 0.0)
 
     def determine_category_and_severity(self, entity_type, text_context):
-        """
-        Scans text for keywords to assign the correct C++ packet category.
-        Returns (category, severity)
-        """
         text = text_context.lower()
         mapping = CATEGORY_MAP.get(entity_type, CATEGORY_MAP["default"])
-        
-        best_cat = "none"
-        severity = 0.0
+        best_cat, severity = "none", 0.1
         
         for keyword, cat in mapping.items():
             if keyword in text:
                 best_cat = cat
-                # Simple sentiment heuristic: modifiers boost severity
                 severity = 0.7 if "severe" in text or "massive" in text else 0.4
                 break
         
-        # Default fallback if no keywords found but entity detected
         if best_cat == "none":
             if entity_type in ["mine", "refinery"]: best_cat = "op"
             else: best_cat = "integrity"
-            severity = 0.1
-
+        
         return best_cat, severity
 
     async def construct_thalamus_signal(self, entities, text_context):
-        """
-        Constructs the EXACT JSON format required by Thalamus C++ Dispatcher.
-        """
         timestamp = int(time.time() * 1000)
         signal_list = []
-
-        # 1. Parse Entities
-        extracted = {e['label']: e['text'] for e in entities}
         
-        # --- CASE A: EARTHQUAKE (Matches EarthquakeTracker.cpp) ---
-        if "earthquake" in extracted:
+        # 1. Handle Earthquakes
+        eq_entity = next((e for e in entities if e['label'] == 'earthquake'), None)
+        if eq_entity:
+            loc_name = next((e['text'] for e in entities if e['label'] == 'location'), None)
             lat, lon = 0.0, 0.0
-            if "location" in extracted:
-                lat, lon = await self.get_coordinates(extracted["location"])
+            if loc_name:
+                lat, lon = await self.get_coordinates(loc_name)
             
-            try:
-                mag = float(extracted.get("magnitude", "0").replace("M", ""))
-            except: mag = 5.0
+            mag_ent = next((e for e in entities if e['label'] == 'magnitude'), None)
+            mag = float(mag_ent['text']) if mag_ent else 5.0
 
-            # [cite_start]EXACT FORMAT required by EarthquakeTracker.cpp [cite: 231]
-            payload = {
+            signal_list.append({
                 "entity_id": f"NEWS_EQ_{timestamp}",
                 "entity_type": "earthquake",
                 "timestamp": timestamp,
-                "reliability_noise": 0.8, # News is fairly reliable, low noise
+                "reliability_noise": 0.8,
+                "data": {"lat": lat, "lon": lon, "mag": mag, "mmi": 1.0}
+            })
+
+        # 2. Handle Assets
+        for ent in entities:
+            if ent['label'] in ["location", "earthquake", "magnitude"]: continue
+            
+            db_id = ent['id']
+            e_type = ent['label']
+            cat, sev = self.determine_category_and_severity(e_type, text_context)
+            
+            signal_list.append({
+                "entity_id": f"NEWS_INFRA_{db_id}_{timestamp}",
+                "entity_type": e_type,
+                "timestamp": timestamp,
+                "reliability_noise": 1.0,
                 "data": {
-                    "lat": lat,
-                    "lon": lon,
-                    "mag": mag,
-                    "mmi": 1.0 # Default if unknown
+                    "asset_id": db_id,
+                    "line_id": db_id,
+                    "category": cat,
+                    "severity": sev,
+                    "reliability": 0.8,
+                    "timestamp": timestamp
                 }
-            }
-            signal_list.append(payload)
-
-        # --- CASE B: ASSETS (Matches Dispatcher.cpp / BaseAsset.cpp) ---
-        for label, name in extracted.items():
-            if label in ["mine", "refinery"]:
-                # Try to find ID in cache
-                db_id = -1
-                for cache_name, cache_id in self.asset_cache.items():
-                    if name.lower() in cache_name:
-                        db_id = cache_id
-                        break
-                
-                if db_id != -1:
-                    cat, sev = self.determine_category_and_severity(label, text_context)
-                    
-                    # [cite_start]EXACT FORMAT required by Dispatcher.cpp [cite: 126]
-                    payload = {
-                        "entity_id": f"NEWS_ASSET_{db_id}_{timestamp}",
-                        "entity_type": label,
-                        "timestamp": timestamp,
-                        "reliability_noise": 1.0, 
-                        "data": {
-                            "asset_id": db_id,
-                            "category": cat,
-                            "severity": sev,
-                            "reliability": 0.7,
-                            "timestamp": timestamp
-                        }
-                    }
-                    signal_list.append(payload)
-
-        # --- CASE C: SUPPLY LINES (Matches Dispatcher.cpp / BaseSupplyLine.cpp) ---
-            elif label in ["rail_line", "maritime_port", "highway", "airport"]:
-                # Try to find ID in cache
-                db_id = -1
-                for cache_name, info in self.line_cache.items():
-                    if name.lower() in cache_name:
-                        db_id = info['id']
-                        break
-                
-                if db_id != -1:
-                    cat, sev = self.determine_category_and_severity(label, text_context)
-
-                    # [cite_start]EXACT FORMAT required by Dispatcher.cpp [cite: 128]
-                    payload = {
-                        "entity_id": f"NEWS_LINE_{db_id}_{timestamp}",
-                        "entity_type": label,
-                        "timestamp": timestamp,
-                        "reliability_noise": 1.0,
-                        "data": {
-                            "line_id": db_id,
-                            "category": cat,
-                            "severity": sev,
-                            "reliability": 0.7,
-                            "timestamp": timestamp
-                        }
-                    }
-                    signal_list.append(payload)
+            })
 
         return signal_list
 
+    def process_text_deterministic(self, text):
+        text_lower = text.lower()
+        doc = nlp(text)
+        entities = []
+
+        # A. EARTHQUAKE DETECTOR
+        if "earthquake" in text_lower or "quake" in text_lower:
+            entities.append({"label": "earthquake", "text": "earthquake"})
+            # Regex for Magnitude (e.g. "magnitude 7.2" or "mag 7.2")
+            mag_match = re.search(r"(?:magnitude|mag)\s*([\d\.]+)", text_lower)
+            if mag_match:
+                entities.append({"label": "magnitude", "text": mag_match.group(1)})
+            # Spacy for Location
+            for ent in doc.ents:
+                if ent.label_ in ["GPE", "LOC"]:
+                    entities.append({"label": "location", "text": ent.text})
+
+        # B. ASSET DETECTOR (The "Rolodex")
+        for name, info in self.context_cache.items():
+            if name in text_lower:
+                entities.append({
+                    "label": info['type'],
+                    "text": name,
+                    "id": info['id']
+                })
+
+        return entities
+
     async def handle_message(self, channel, raw_data, redis_client):
         try:
-            # Decode Radio Engine JSON
             payload = json.loads(raw_data.decode())
             text_chunk = payload.get("text", "").strip()
-            print(f"[DEBUG] Heard on {channel}: {text_chunk}")
             if not text_chunk: return
 
             ch_name = channel.decode()
             if ch_name not in self.buffers: self.buffers[ch_name] = ""
-            
             self.buffers[ch_name] += " " + text_chunk
             
-            # Sentence Boundary Detection
             if any(mark in text_chunk for mark in [".", "!", "?"]):
                 context = self.buffers[ch_name].strip()
                 self.buffers[ch_name] = "" 
-                print(f"[DEBUG] Triggering AI Model on: {context[:30]}...")
-                # GLiNER Inference
-                loop = asyncio.get_running_loop()
-                entities = await loop.run_in_executor(None, self.process_text_sync, context)
-                print(f"[DEBUG] AI Finished. Found: {len(entities)} entities.")
-                # Generate Thalamus-Compatible Signals
-                signals = await self.construct_thalamus_signal(entities, context)
                 
+                print(f"[DEBUG] Analyzing: {context[:40]}...")
+                entities = self.process_text_deterministic(context)
+                print(f"[DEBUG] Found Entities: {len(entities)}")
+                
+                signals = await self.construct_thalamus_signal(entities, context)
                 for sig in signals:
-                    print(f"[BRAIN] Generated Signal: {sig['entity_type']} -> {sig.get('data')}")
+                    print(f"[BRAIN] SIGNAL GENERATED: {sig['entity_type']} -> ID: {sig['data'].get('asset_id', 'EQ')}")
                     await redis_client.lpush("raw_signals", json.dumps(sig))
 
         except Exception as e:
             print(f"[ERR] Processing Error: {e}")
 
-    def process_text_sync(self, text):
-        return model.predict_entities(text, TARGET_LABELS, threshold=0.45)
-
 async def run_processor():
     db_config = {
-        'user': 'rocco_admin',
-        'password': 'REMOVED',
-        'database': 'rocco_commodities',
-        'host': 'hippocampus',
-        'port': 5432
+        'user': 'rocco_admin', 'password': 'REMOVED',
+        'database': 'rocco_commodities', 'host': 'hippocampus', 'port': 5432
     }
     
     processor = RadioNewsSignalProcessor(db_config)
@@ -265,7 +219,7 @@ async def run_processor():
     pubsub = r.pubsub()
     await pubsub.psubscribe("raw:news:*")
     
-    print(f"[{datetime.now()}] Radio Brain Online. Integrating Signals...")
+    print(f"[{datetime.now()}] Radio Brain Online (Deterministic Mode).")
 
     async for message in pubsub.listen():
         if message['type'] == 'pmessage':

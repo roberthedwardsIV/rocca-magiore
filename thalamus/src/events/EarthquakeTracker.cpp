@@ -10,6 +10,17 @@ EarthquakeTracker::EarthquakeTracker(const json& initial_sig) {
     current_state.process_noise = 0.005f; // Small decrease of certainty over time without updates
     current_state.event_time = initial_sig["timestamp"]; // First signal will determine event time
     
+    if (initial_sig["data"].contains("lat")) {
+        current_state.lat = initial_sig["data"]["lat"];
+        current_state.lon = initial_sig["data"]["lon"];
+    } else {
+        current_state.lat = 0.0f;
+        current_state.lon = 0.0f;
+    }
+    
+    // Initialize other metrics to safe defaults
+    current_state.magnitude = 0.0f;
+    current_state.intensity = 0.0f;
     // We call process_packet directly to ensure the first signal is logged in history_log
     process_packet(initial_sig);
 }

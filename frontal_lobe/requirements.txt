@@ -5,7 +5,7 @@ scipy
 sqlalchemy
 redis
 obspy
-tensorflow==2.15.0
+tensorflow-cpu==2.15.0
 scikit-learn
 matplotlib
 tqdm
@@ -13,6 +13,5 @@ requests
 shapely
 xarray
 cfgrib
-gliner
 spacy
 asyncpg

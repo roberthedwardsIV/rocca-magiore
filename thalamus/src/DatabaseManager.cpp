@@ -28,10 +28,10 @@ void save_to_database(const json& state) {
 
         if (type == "earthquake") {
             long long ts = state.value("start_time", 0LL);
-            float mag = state["data"].value("mag", 0.0f);
-            float intensity = state["data"].value("mmi", 0.0f);
-            float lat = state["data"].value("lat", 0.0f);
-            float lon = state["data"].value("lon", 0.0f);
+            float mag = state.value("final_mag", 0.0f);
+            float intensity = state.value("final_intensity", 0.0f);
+            float lat = state.value("lat", 0.0f);
+            float lon = state.value("lon", 0.0f);
             std::string history = state.value("history_log", json::array()).dump();
 
             std::string sql = "INSERT INTO earthquakes (id, magnitude, intensity, lat, lon, start_time, history, geom) "
