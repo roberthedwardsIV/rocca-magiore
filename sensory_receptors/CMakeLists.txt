@@ -31,6 +31,12 @@ target_link_libraries(seismic_engine
     pthread
 )
 
+add_executable(aviation_ingest src/data_sources/fast_streams/aviation_ingest.cpp)
+target_link_libraries(aviation_ingest
+    ${HIREDIS_LIBRARIES}
+    curl
+    pthread
+)
 # --- NEW RADIO ENGINE ---
 add_subdirectory(src/data_sources/med_streams)
 
