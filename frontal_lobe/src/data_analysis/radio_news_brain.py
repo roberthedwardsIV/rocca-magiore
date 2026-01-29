@@ -61,7 +61,7 @@ class RadioNewsSignalProcessor:
         async with self.db_pool.acquire() as conn:
             try:
                 # Fetch Lat/Lon from Database
-                rows = await conn.fetch("SELECT id, name, type, latitude, longitude FROM assets")
+                rows = await conn.fetch("SELECT id, name, commodity_types[1], latitude, longitude FROM assets")
                 for r in rows:
                     self.context_cache[r['name'].lower()] = {
                         "id": r['id'], 

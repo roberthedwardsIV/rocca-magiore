@@ -18,16 +18,21 @@ extern "C" {
 
 class RadioStream {
 public:
+    // Constructor
     RadioStream(std::string name, std::string country_code, std::string tag);
+
+    // Destructor
     ~RadioStream();
 
+    // Public methods
     void start();
     void stop();
     bool is_active() const { return running; }
 
 private:
+    // Private methods
     void stream_loop();
-    std::string resolve_stream_url(); // Queries Radio-Browser API
+    std::string resolve_stream_url();
     void transcribe_segment(const std::vector<float>& pcm_data);
 
     // Config

@@ -10,33 +10,22 @@
 
 using json = nlohmann::json;
 
-/**
-* @brief  
+// Configuration Variables
+const std::string CLIENT_ID = "REMOVED";
+const std::string CLIENT_SECRET = "REMOVED";
+const std::string TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
+std::string access_token = "";
+auto token_expiry = std::chrono::steady_clock::now();
 
-*/
 
-// ------------------------------------------------------------------------------------------------------------------------
-// Name: WriteCallback() | Type: FUNCTION-UTIL | Params: contents (data), size, nmemb, and userp | Output: size * nmemb
-// Purpose: piece together the chunks of data recieved from OpenSky into a unified data object
+// Helper function: writes API call contents into unified format for fetching
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
 
-
-// ------------------------------------------------------------------------------------------------------------------------
-// Configuration Variables
-const std::string CLIENT_ID = "REMOVED";
-const std::string CLIENT_SECRET = "JF5DSUA7jjS2CQGy2G0u1R92ug8Vp87s";
-const std::string TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
-std::string access_token = "";
-auto token_expiry = std::chrono::steady_clock::now();
-
-
-
-
-// Function to get a fresh OAuth2 Token (2025 Method)
+// Helper function: gets a fresh OAuth2 Token for OpenSky
 bool refresh_token() {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
@@ -66,25 +55,24 @@ bool refresh_token() {
         try {
             auto j = json::parse(readBuffer);
             access_token = j["access_token"];
+
+            // Refresh token every 25 minutes to maintain auth status
             token_expiry = std::chrono::steady_clock::now() + std::chrono::seconds(1500);
-            std::cout << "[AUTH] Success: Access Token Acquired." << std::endl;
+            std::cout << "[AVIATION](AUTH) Success: Access Token Acquired." << std::endl;
             return true;
         } catch (...) { return false; }
     } else {
-        std::cerr << "[AUTH ERR] HTTP: " << http_code << " | Response: " << readBuffer << std::endl;
+        std::cerr << "[AVIATION](AUTH ERROR) HTTP: " << http_code << " | Response: " << readBuffer << std::endl;
         return false;
     }
 }
 
 
-
-
-
+// Streaming function: fetches world-wide radar sweep from Opensky and appends data to "global_sky" redis channel
 void sync_flights(redisContext* redis) {
-    // 1. Check/Refresh OAuth2 Token
     if (access_token == "" || std::chrono::steady_clock::now() >= token_expiry) {
         if (!refresh_token()) {
-            std::cerr << "[ERR] Cannot sync flights without valid token." << std::endl;
+            std::cerr << "[AVIATION](ERR) Cannot sync flights without valid token." << std::endl;
             return;
         }
     }
@@ -93,7 +81,8 @@ void sync_flights(redisContext* redis) {
     if (!curl) return;
 
     std::string buf;
-    // TARGET: Global API (Costs 4 credits, covers everything)
+
+    // World-wide flight state search (4 credits/search)
     std::string url = "https://opensky-network.org/api/states/all";
     
     struct curl_slist* headers = NULL;
@@ -105,7 +94,6 @@ void sync_flights(redisContext* redis) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
 
-    // 2. Execute Global Pulse
     if (curl_easy_perform(curl) == CURLE_OK) {
         long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
@@ -116,13 +104,9 @@ void sync_flights(redisContext* redis) {
                 if (j.contains("states") && !j["states"].is_null()) {
                     int count = 0;
                     for (auto& s : j["states"]) {
-                        // Data extraction by index based on OpenSky API response schema
                         std::string icao = s[0].get<std::string>();
                         std::string call = s[1].is_null() ? "UNK" : s[1].get<std::string>();
-                        
-                        // Clean callsign strings (OpenSky often leaves trailing spaces)
                         call.erase(call.find_last_not_of(" \n\r\t") + 1);
-
                         double lon = s[5].is_null() ? 0 : s[5].get<double>();
                         double lat = s[6].is_null() ? 0 : s[6].get<double>();
                         double alt = s[7].is_null() ? 0 : s[7].get<double>();
@@ -131,29 +115,23 @@ void sync_flights(redisContext* redis) {
 
                         if (lat == 0 || lon == 0) continue;
 
-                        // 3. Update Redis Layer
                         redisCommand(redis, "SELECT 1");
                         std::string member = icao + ":" + call;
-                        
-                        // Geo-index for spatial queries
                         redisCommand(redis, "GEOADD global_sky %f %f %s", lon, lat, member.c_str());
-
-                        // Real-time Hash for the Python Brain
                         std::string key = "flight_data:" + icao;
                         redisCommand(redis, "HSET %s lat %f lon %f alt %f vel %f v_rate %f ts %ld", 
                                      key.c_str(), lat, lon, alt, vel, ver, std::time(nullptr));
-                        
-                        // Expire after 5 mins to keep Redis clean if a plane leaves coverage
                         redisCommand(redis, "EXPIRE %s 300", key.c_str());
+
                         count++;
                     }
-                    std::cout << "[PULSE] Global Sync: " << count << " aircraft updated." << std::endl;
+                    std::cout << "[AVIATION](PULSE) Global Sync: " << count << " aircraft updated." << std::endl;
                 }
             } catch (const json::parse_error& e) {
-                std::cerr << "[JSON ERR] Failed to parse: " << e.what() << std::endl;
+                std::cerr << "[AVIATION](JSON ERR) Failed to parse: " << e.what() << std::endl;
             }
         } else {
-            std::cerr << "[API WARN] Global Pulse Failed | HTTP: " << http_code << std::endl;
+            std::cerr << "[AVIATION](API WARN) Global Pulse Failed | HTTP: " << http_code << std::endl;
         }
     }
 
@@ -162,12 +140,11 @@ void sync_flights(redisContext* redis) {
 }
 
 
-
-
+// Main(): connects to "global_sky" redis channel + runs sync_flights every 90 seconds
 int main() {
-    redisContext* redis = redisConnect("redis", 6379);
+    redisContext* redis = redisConnect("corpus_callosum", 6379);
     if (redis == NULL || redis->err) {
-        std::cerr << "[REDIS ERR] " << (redis ? redis->errstr : "Allocation error") << std::endl;
+        std::cerr << "[AVIATION](REDIS ERR) " << (redis ? redis->errstr : "Allocation error") << std::endl;
         return 1;
     }
 

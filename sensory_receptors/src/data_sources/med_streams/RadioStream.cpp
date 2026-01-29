@@ -5,45 +5,47 @@
 
 using json = nlohmann::json;
 
-// -- LibCurl Helper for API --
+// Helper function: writes API call contents into unified format for fetching
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
+
+// Constructor: builds new instance for a radio station + initializes redis connection + whisper SST
 RadioStream::RadioStream(std::string name, std::string country, std::string tag)
     : station_name(name), country_code(country), tag(tag) {
     
-    // Connect to Redis
     redis_ctx = redisConnect("corpus_callosum", 6379);
-    
-    // Initialize Whisper
-    // Ensure the model path matches what we put in Dockerfile
+
     ctx = whisper_init_from_file("/app/models/ggml-small.en.bin");
     if (!ctx) {
-        std::cerr << "[CRITICAL] Failed to load Whisper model!" << std::endl;
+        std::cerr << "[RADIOSTREAM](CRITICAL) Failed to load Whisper model!" << std::endl;
     }
-    
-    // Configure Whisper (Standard English Translation)
+
     wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     wparams.print_progress = false;
     wparams.print_timestamps = false;
     wparams.language = "en"; 
 }
 
+
+// Destructor: destroys instance of a radio station + frees redis connection + whisper SST
 RadioStream::~RadioStream() {
     stop();
     if (redis_ctx) redisFree(redis_ctx);
     if (ctx) whisper_free(ctx);
 }
 
-// -- 1. DISCOVERY: Find a working URL from Radio-Browser --
+
+// URL function: finds the best url to target for the station we request
 std::string RadioStream::resolve_stream_url() {
     CURL* curl = curl_easy_init();
     if (!curl) return "";
 
     std::string readBuffer;
-    // Search for highest clicked station matching tag/country
+
+    // Highest clicked station matching tag/country
     std::string query = "https://de1.api.radio-browser.info/json/stations/search?limit=1&order=clickcount&reverse=true&countrycode=" + country_code + "&tag=" + tag;
     
     curl_easy_setopt(curl, CURLOPT_URL, query.c_str());
@@ -56,7 +58,7 @@ std::string RadioStream::resolve_stream_url() {
         auto j = json::parse(readBuffer);
         if (!j.empty() && j[0].contains("url_resolved")) {
             std::string url = j[0]["url_resolved"];
-            std::cout << "[RADIO] Resolved " << station_name << " to: " << url << std::endl;
+            std::cout << "[RADIOSTREAM] Resolved " << station_name << " to: " << url << std::endl;
             return url;
         }
     } catch (...) {}
@@ -64,22 +66,27 @@ std::string RadioStream::resolve_stream_url() {
     return "";
 }
 
+
+// Start function: starts a new thread and detaches to start new stream
 void RadioStream::start() {
     running = true;
     worker_thread = std::thread(&RadioStream::stream_loop, this);
     worker_thread.detach();
 }
 
+
+// Stop function: stops a thread and joins to stop a stream
 void RadioStream::stop() {
     running = false;
     if (worker_thread.joinable()) worker_thread.join();
 }
 
-// -- 2. CONSUMPTION: The Libav Loop --
+
+// Streaming function: establishes connection to audio streams, resamples as needed by Whisper and sends buffers off for SST transcription
 void RadioStream::stream_loop() {
     resolved_url = resolve_stream_url();
     if (resolved_url.empty()) {
-        std::cerr << "[RADIO ERR] Could not resolve URL for " << station_name << std::endl;
+        std::cerr << "[RADIOSTREAM](ERR) Could not resolve URL for " << station_name << std::endl;
         running = false;
         return;
     }
@@ -87,7 +94,7 @@ void RadioStream::stream_loop() {
     // FFmpeg Init
     AVFormatContext* fmt_ctx = avformat_alloc_context();
     if (avformat_open_input(&fmt_ctx, resolved_url.c_str(), NULL, NULL) < 0) {
-        std::cerr << "[RADIO ERR] Failed to open stream: " << resolved_url << std::endl;
+        std::cerr << "[RADIOSTREAM](ERR) Failed to open stream: " << resolved_url << std::endl;
         return;
     }
     
@@ -123,12 +130,13 @@ void RadioStream::stream_loop() {
     AVFrame* frame = av_frame_alloc();
     
     std::vector<float> pcm_buffer;
+
     // Buffer 30 seconds of audio (16000 samples/sec * 30)
     const size_t CHUNK_SIZE = 16000 * 30; 
 
     while (running) {
         if (av_read_frame(fmt_ctx, packet) < 0) {
-            // Reconnect logic would go here
+            // Currently just breaks, but reconnection logic possible here in the future.
             break;
         }
 
@@ -146,7 +154,7 @@ void RadioStream::stream_loop() {
                     pcm_buffer.insert(pcm_buffer.end(), output_buffer, output_buffer + out_samples);
                     av_freep(&output_buffer);
 
-                    // -- 3. TRANSCRIPTION TRIGGER --
+                    // Send for transcription by Whisper
                     if (pcm_buffer.size() >= CHUNK_SIZE) {
                         transcribe_segment(pcm_buffer);
                         pcm_buffer.clear(); // Flush buffer after processing
@@ -163,10 +171,11 @@ void RadioStream::stream_loop() {
     avformat_close_input(&fmt_ctx);
 }
 
-// -- 4. TRANSCRIPTION: Whisper.cpp --
+
+// SST (Whisper) function: converts audio speech to transcripts and sends to frontal_lobe via "raw:news:___" redis channel
 void RadioStream::transcribe_segment(const std::vector<float>& pcm_data) {
     if (whisper_full(ctx, wparams, pcm_data.data(), pcm_data.size()) != 0) {
-        std::cerr << "[WHISPER] failed to process audio" << std::endl;
+        std::cerr << "[RADIOSTREAM](WHISPER) failed to process audio" << std::endl;
         return;
     }
 
@@ -178,15 +187,11 @@ void RadioStream::transcribe_segment(const std::vector<float>& pcm_data) {
     }
 
     if (!full_text.empty() && redis_ctx) {
-        std::cout << "[RADIO RX] " << station_name << ": " << full_text << std::endl;
-        
-        // Push as JSON so existing python brains can parse it easily
+        std::cout << "[RADIOSTREAM] " << station_name << ": " << full_text << std::endl;
         json j;
         j["source"] = "radio";
         j["station"] = station_name;
         j["text"] = full_text;
-        
-        // Publish to the same channel the Youtube bot used, or a new one
         redisCommand(redis_ctx, "PUBLISH raw:news:%s %s", station_name.c_str(), j.dump().c_str());
     }
 }

@@ -121,7 +121,7 @@ void send_to_brain(const std::string& key, const std::deque<float>& samples) {
         std::vector<float> data(samples.begin(), samples.end());
         send(sock, data.data(), data.size() * sizeof(float), 0);
     } else {
-        fprintf(stderr, "\n[SOCKET ERROR] %s: %s\n", key.c_str(), strerror(errno));
+        fprintf(stderr, "\n[SEISMIC](SOCKET ERROR) %s: %s\n", key.c_str(), strerror(errno));
         fflush(stderr);
     }
     close(sock);
@@ -191,7 +191,7 @@ std::vector<TargetStation> fetch_stations_from_db() {
             station_map[key] = ts;
         }
     } catch (const std::exception &e) {
-        std::cerr << "[DB Error] " << e.what() << std::endl;
+        std::cerr << "[SEISMIC](DB Error) " << e.what() << std::endl;
     }
     return targets;
 }
@@ -221,7 +221,7 @@ void run_seismic_stream() {
     serv_addr.sin_port = htons(SERVER_PORT);
 
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        std::cerr << "[CRITICAL] IRIS Connection Failed" << std::endl;
+        std::cerr << "[SEISMIC](CRITICAL) IRIS Connection Failed" << std::endl;
         return;
     }
 
@@ -236,7 +236,7 @@ void run_seismic_stream() {
 
     std::string handshake = ss.str();
     write(sockfd, handshake.c_str(), handshake.length());
-    std::cout << "[DEBUG] Handshake sent. Requesting backlog..." << std::endl;
+    std::cout << "[SEISMIC](DEBUG) Handshake sent. Requesting backlog..." << std::endl;
 
     uint8_t buf[BUFFER_SIZE];
     int buf_len = 0;
@@ -274,7 +274,7 @@ void run_seismic_stream() {
 // ------------------------------------------------------------------------------------------------------------
 // MAIN FUNCTION
 int main() {
-    std::cout << "ROCCO-MAGGIORE SEISMIC CORE: ONLINE" << std::endl;
+    std::cout << "[SEISMIC] ROCCO-MAGGIORE SEISMIC CORE: ONLINE" << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(2));
     run_seismic_stream();
     return 0;

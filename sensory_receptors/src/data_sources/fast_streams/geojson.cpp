@@ -14,14 +14,8 @@
 using json = nlohmann::json;
 using namespace sw::redis;
 
-/**
-* Source: GeoJSON (USGS Earthquake Alerts)
-* Brief: we poll the last hour alert dataset every minute as it gets updated.
-*        With each new earthquake posted, we trigger a signal.
-*/
 
-
-// Structure for calculated seismic signals
+// Structure for calculated seismic signals to be sent to raw_signals
 struct SignalPacket {
     std::string entity_id;;
     std::string entity_type = "earthquake";
@@ -45,14 +39,14 @@ struct SignalPacket {
 };
 
 
-// Helper function to do raw API fetching
+// Helper function: writes API call contents into unified format for fetching
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
 
-// Helper function that requests data from USGS GeoJSON
+// Helper function: requests data from USGS GeoJSON (last hour - all earthquakes)
 std::string fetchUSGSData(const std::string& url) {
     CURL* curl;
     CURLcode res;
@@ -71,13 +65,11 @@ std::string fetchUSGSData(const std::string& url) {
 }
 
 
-// ---------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------
+// Main(): runs the fetchUSGSData() every minute and sends signal packets to "raw_signals" redis channel for any new earthquakes found
 int main() {
     const std::string url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson";
     std::string last_processed_id = "";
 
-    // Connect to Redis
     auto redis = Redis("tcp://corpus_callosum:6379");
 
     std::cout << "[GEOJSON] Earthquake Monitor Started. Connecting to Redis & Postgres..." << std::endl;
@@ -106,16 +98,14 @@ int main() {
                             float lat = geometry[1];
                             long long ms_since_epoch = props["time"];
 
-                            // Create Signal Packet
+                            // Ignore intensity since it takes USGS days to get accurate survey
                             SignalPacket signal;
                             signal.entity_id = id;
                             signal.data["lat"] = lat;
                             signal.data["lon"] = lon;
                             signal.data["mag"] = mag;
-
                             signal.timestamp = ms_since_epoch;
 
-                            // Push to Redis
                             redis.lpush("raw_signals", signal.to_json_str());
 
                             std::cout << "[GeoJSON] Earthquake Alert at: " << std::fixed << std::setprecision(2) << lat;
@@ -126,7 +116,7 @@ int main() {
                     }
                 }
             } catch (const std::exception& e) {
-                std::cerr << "JSON processing error: " << e.what() << std::endl;
+                std::cerr << "[GEOJSON] JSON processing error: " << e.what() << std::endl;
             }
         }
         

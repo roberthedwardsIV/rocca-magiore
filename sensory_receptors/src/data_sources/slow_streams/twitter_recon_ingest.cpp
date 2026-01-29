@@ -8,25 +8,22 @@
 
 using json = nlohmann::json;
 
-// --- CONFIGURATION ---
+
+// Configuration 
 const std::string DB_CONN = "dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432";
-
-// HOST: The main server, not the public proxy
 const std::string BSKY_PDS = "https://bsky.social"; 
-
-// CREDENTIALS: YOU MUST SET THESE
-// 1. Create a free account at bsky.app
-// 2. Go to Settings > App Passwords > Add App Password
 const std::string BSKY_HANDLE = "REMOVED"; 
 const std::string BSKY_PASSWORD = "REMOVED"; 
 
-// --- UTILITIES ---
 
+// Helper function: writes API call contents into unified format for fetching
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
+
+// URL function: encodes our query for insertion into twitter url used at search time
 std::string url_encode(CURL* curl, const std::string& value) {
     char* output = curl_easy_escape(curl, value.c_str(), value.length());
     if (output) {
@@ -37,6 +34,8 @@ std::string url_encode(CURL* curl, const std::string& value) {
     return "";
 }
 
+
+// Geolocator function: finds nearest city to signal triggering twitter search
 std::string get_nearest_city(float lat, float lon) {
     try {
         pqxx::connection C(DB_CONN);
@@ -53,8 +52,8 @@ std::string get_nearest_city(float lat, float lon) {
     return "";
 }
 
-// --- AUTHENTICATION ---
 
+// Authentication function: obtains BlueSky authentication token needed for Twitter search
 std::string authenticate_and_get_token() {
     CURL* curl = curl_easy_init();
     if (!curl) return "";
@@ -62,7 +61,6 @@ std::string authenticate_and_get_token() {
     std::string url = BSKY_PDS + "/xrpc/com.atproto.server.createSession";
     std::string response_buffer;
 
-    // JSON Payload
     json payload;
     payload["identifier"] = BSKY_HANDLE;
     payload["password"] = BSKY_PASSWORD;
@@ -89,10 +87,10 @@ std::string authenticate_and_get_token() {
             auto j = json::parse(response_buffer);
             token = j["accessJwt"];
         } catch (...) {
-            std::cerr << "[AUTH ERR] Failed to parse token." << std::endl;
+            std::cerr << "[TWITTER](AUTH ERR) Failed to parse token." << std::endl;
         }
     } else {
-        std::cerr << "[AUTH ERR] Failed. HTTP: " << http_code << " | Resp: " << response_buffer << std::endl;
+        std::cerr << "[TWITTER](AUTH ERR) Failed. HTTP: " << http_code << " | Resp: " << response_buffer << std::endl;
     }
 
     curl_slist_free_all(headers);
@@ -100,14 +98,13 @@ std::string authenticate_and_get_token() {
     return token;
 }
 
-// --- SEARCH EXECUTION ---
 
+// Twitter search function: constructs custom query based on signal type + location, then pulls 
+// latest 25 tweets and sends to frontal_lobe via "twitter_stream_buffer" redis channel
 void perform_twitter_search(redisContext* redis, json& task) {
-    // 1. Authenticate First (Get Fresh Token)
-    // Since this is a "Slow Stream" (rare execution), logging in every time is safer/easier than managing expiry.
     std::string access_token = authenticate_and_get_token();
     if (access_token.empty()) {
-        std::cerr << "[TWITTER RECON] Skipping search. Authentication failed." << std::endl;
+        std::cerr << "[TWITTER] Skipping search. Authentication failed." << std::endl;
         return;
     }
 
@@ -118,7 +115,7 @@ void perform_twitter_search(redisContext* redis, json& task) {
     std::string city = get_nearest_city(task["lat"], task["lon"]);
     
     if (city.empty()) {
-        std::cout << "[TWITTER RECON] No city found. Aborting." << std::endl;
+        std::cout << "[TWITTER] No city found. Aborting." << std::endl;
         curl_easy_cleanup(curl);
         return;
     }
@@ -126,16 +123,16 @@ void perform_twitter_search(redisContext* redis, json& task) {
     std::string search_term = "";
     if (type == "earthquake") search_term = "earthquake " + city;
     else if (type == "wildfire") search_term = "wildfire " + city;
+    // Able to add more event types here to properly construct tweet query
     else search_term = type + " " + city;
 
-    std::cout << "[TWITTER RECON] Authenticated Search: '" << search_term << "'" << std::endl;
+    std::cout << "[TWITTER] Authenticated Search: '" << search_term << "'" << std::endl;
 
     std::string encoded_query = url_encode(curl, search_term);
     std::string url = BSKY_PDS + "/xrpc/app.bsky.feed.searchPosts?q=" + encoded_query + "&limit=25";
     std::string response_buffer;
     
     struct curl_slist* headers = NULL;
-    // CRITICAL: Add the Bearer Token
     std::string auth_header = "Authorization: Bearer " + access_token;
     headers = curl_slist_append(headers, auth_header.c_str());
 
@@ -163,21 +160,24 @@ void perform_twitter_search(redisContext* redis, json& task) {
             
             int count = 0;
             if(raw_response.contains("posts")) count = raw_response["posts"].size();
-            std::cout << "[TWITTER RECON] Success. Pushed " << count << " posts." << std::endl;
+            std::cout << "[TWITTER] Success. Pushed " << count << " posts." << std::endl;
 
         } catch (const std::exception& e) {
-            std::cerr << "[JSON ERR] " << e.what() << std::endl;
+            std::cerr << "[TWITTER](JSON ERR) " << e.what() << std::endl;
         }
     } else {
-        std::cerr << "[API ERR] HTTP: " << http_code << " | Resp: " << response_buffer << std::endl;
+        std::cerr << "[TWITTER](API ERR) HTTP: " << http_code << " | Resp: " << response_buffer << std::endl;
     }
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 }
 
+
+// Main(): connects + listens to "twitter_recon_tasks" redis channel and calls perform_twitter_search()
+// when prompted by new signal
 int main() {
-    std::cout << "[TWITTER RECON] Authenticated Slow Stream Ingest Online." << std::endl;
+    std::cout << "[TWITTER] Authenticated Slow Stream Ingest Online." << std::endl;
     
     redisContext* sub = redisConnect("corpus_callosum", 6379);
     redisContext* pub = redisConnect("corpus_callosum", 6379);

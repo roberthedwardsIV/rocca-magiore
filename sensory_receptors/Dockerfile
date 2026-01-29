@@ -1,6 +1,5 @@
 FROM gcc:12
 
-# 1. Install System Dependencies
 RUN apt-get update && apt-get install -y \
     cmake libpq-dev libpqxx-dev libhiredis-dev libmseed-dev \
     libcurl4-openssl-dev nlohmann-json3-dev libboost-system-dev \
@@ -9,12 +8,10 @@ RUN apt-get update && apt-get install -y \
     libswresample-dev libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Keep Deno
 RUN curl -fsSL https://deno.land/x/install/install.sh | sh
 ENV DENO_INSTALL="/root/.deno"
 ENV PATH="$DENO_INSTALL/bin:$PATH"
 
-# 3. Keep Python/Locales
 RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen
 ENV LANG en_US.UTF-8
 ENV LC_ALL en_US.UTF-8
@@ -23,12 +20,10 @@ RUN pip3 install --no-cache-dir yt-dlp --break-system-packages
 
 WORKDIR /tmp
 
-# 4. Keep Redis++
 RUN git clone https://github.com/sewenew/redis-plus-plus.git && \
     cd redis-plus-plus && mkdir build && cd build && \
     cmake .. && make && make install && ldconfig
 
-# 5. Whisper.cpp Build
 RUN git clone --branch v1.5.4 https://github.com/ggerganov/whisper.cpp.git && \
     cd whisper.cpp && \
     make -j$(nproc) && \
@@ -44,12 +39,9 @@ RUN git clone --branch v1.5.4 https://github.com/ggerganov/whisper.cpp.git && \
 WORKDIR /app
 COPY . .
 
-# 6. Build All Engines (Seismic + Aviation + Radio + Twitter)
 RUN rm -rf build && mkdir build && cd build && \
     cmake .. && make -j$(nproc)
 
-# 7. Update Startup Script
-# Added ./build/aviation_ingest & to the background processes
 RUN echo "#!/bin/bash\n\
 ./build/seismic_engine &\n\
 ./build/aviation_ingest &\n\
