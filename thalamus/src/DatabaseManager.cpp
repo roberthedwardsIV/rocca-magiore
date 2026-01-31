@@ -76,6 +76,36 @@ void save_to_database(const json& state) {
     }
 }
 
+void save_ticker_state(const json& state) {
+    try {
+        pqxx::connection C(conn_str);
+        pqxx::work W(C);
+
+        std::string symbol = state.value("symbol", "UNKNOWN");
+        double price = state.value("price", 0.0);
+        double vol = state.value("volatility", 0.0);
+        
+        // Extract Greeks/Metadata into a separate JSONB object
+        json extra_data;
+        if (state.contains("delta")) extra_data["delta"] = state["delta"];
+        if (state.contains("gamma")) extra_data["gamma"] = state["gamma"];
+        if (state.contains("iv")) extra_data["iv"] = state["iv"];
+        if (state.contains("expiry")) extra_data["expiry"] = state["expiry"];
+        if (state.contains("liquidity")) extra_data["liq"] = state["liquidity"];
+
+        std::string sql = "INSERT INTO ticker_states (time_bucket, symbol, price, volatility, greeks) "
+                          "VALUES (NOW(), " + W.quote(symbol) + ", " 
+                          + std::to_string(price) + ", " 
+                          + std::to_string(vol) + ", " 
+                          + W.quote(extra_data.dump()) + "::jsonb);";
+        
+        W.exec(sql);
+        W.commit();
+    } catch (const std::exception &e) {
+        std::cerr << "[DB SAVE ERROR] Ticker save failed: " << e.what() << std::endl;
+    }
+}
+
 json query_database_for_event(std::string id, float lat, float lon, long long ts, std::string type) {
     try {
         pqxx::connection C(conn_str);

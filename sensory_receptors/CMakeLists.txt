@@ -17,9 +17,10 @@ include_directories(
     ${Boost_INCLUDE_DIRS}
     ${LIBAV_INCLUDE_DIRS}
     /usr/include/postgresql
+    /usr/local/include/twsapi
 )
 
-link_directories(${PQXX_LIBRARY_DIRS} ${HIREDIS_LIBRARY_DIRS} ${LIBAV_LIBRARY_DIRS})
+link_directories(${PQXX_LIBRARY_DIRS} ${HIREDIS_LIBRARY_DIRS} ${LIBAV_LIBRARY_DIRS} /usr/local/lib) 
 
 # --- SEISMIC ENGINE (Fast streams) ---
 add_executable(seismic_engine src/data_sources/fast_streams/seismic_monitors.cpp)
@@ -35,6 +36,14 @@ add_executable(aviation_ingest src/data_sources/fast_streams/aviation_ingest.cpp
 target_link_libraries(aviation_ingest
     ${HIREDIS_LIBRARIES}
     curl
+    pthread
+)
+
+# --- MARKET DATA STREAMS ---
+add_executable(ibkr_ingest src/market_data/ibkr_ingest.cpp)
+target_link_libraries(ibkr_ingest
+    ${HIREDIS_LIBRARIES}
+    TwsApi
     pthread
 )
 

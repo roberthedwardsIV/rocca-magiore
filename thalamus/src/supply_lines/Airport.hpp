@@ -5,10 +5,13 @@
 
 struct AirportState {
     float runway_integrity;   
-    float atc_capacity;     
+    float cargo_throughput;   
+    float atc_efficiency;     
     float fuel_availability;  
-    
-    float unc_run, unc_atc, unc_fuel; 
+    float processing_delay_hours; 
+
+    float unc_run, unc_cargo, unc_atc, unc_fuel;
+     
     long long last_update;
 };
 

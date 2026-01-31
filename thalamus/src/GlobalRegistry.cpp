@@ -30,6 +30,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// Registry definitions (events, assets + supply assets)
 std::unordered_map<std::string, std::shared_ptr<BaseEvent>> GlobalRegistry::event_map;
 std::mutex GlobalRegistry::event_mtx;
 std::unordered_map<int, std::shared_ptr<BaseAsset>> GlobalRegistry::asset_map;
@@ -37,6 +38,8 @@ std::mutex GlobalRegistry::asset_mtx;
 std::unordered_map<int, std::shared_ptr<BaseSupplyLine>> GlobalRegistry::supply_map;
 std::mutex GlobalRegistry::supply_mtx;
 
+
+// Helper function: haversine distance calculation
 float GlobalRegistry::calculate_distance(float lat1, float lon1, float lat2, float lon2) {
     const float EARTH_RADIUS_KM = 6371.0f;
     float dLat = (lat2 - lat1) * M_PI / 180.0f;
@@ -50,19 +53,24 @@ float GlobalRegistry::calculate_distance(float lat1, float lon1, float lat2, flo
     return EARTH_RADIUS_KM * c;
 }
 
+// EVENT LOGIC
+// Searches for events by direct ID matches 
 std::shared_ptr<BaseEvent> GlobalRegistry::get_event(const std::string& id) {
     std::lock_guard<std::mutex> lock(event_mtx);
     auto it = event_map.find(id);
     return (it != event_map.end()) ? it->second : nullptr;
 }
 
+
+// Searches for events in proximity (uses calculate_distance() as needed)
 std::string GlobalRegistry::find_event_by_proximity(float lat, float lon, long long timestamp, const std::string& entity_type) {
-    float radius_km = 100.0f;
-    long long time_ms = 180000LL;
+    float radius_km = 100.0f;       // 100 km radius
+    long long time_ms = 180000LL;   // 3 min. timeframe
+
     std::lock_guard<std::mutex> lock(event_mtx);
 
     for (auto const& [id, event] : event_map) {
-        std::string type = event->entity_type;
+        std::string type = event->entity_type; // verify event types match
         if (type != entity_type) continue;
 
         float d = calculate_distance(lat, lon, event->get_lat(), event->get_lon());
@@ -76,11 +84,15 @@ std::string GlobalRegistry::find_event_by_proximity(float lat, float lon, long l
     return "";
 }
 
+
+// Adds new event to event registry
 void GlobalRegistry::register_event(const std::string& id, std::shared_ptr<BaseEvent> event) {
     std::lock_guard<std::mutex> lock(event_mtx);
     event_map[id] = event;
 }
 
+
+// Method to iterate through all events in event registry (thread-safe) without individual mutex locks/unlocks for each one
 void GlobalRegistry::for_each_event(std::function<void(const std::string&, std::shared_ptr<BaseEvent>)> func) {
     std::lock_guard<std::mutex> lock(event_mtx);
     for (auto& [id, event] : event_map) {
@@ -88,16 +100,21 @@ void GlobalRegistry::for_each_event(std::function<void(const std::string&, std::
     }
 }
 
+
+// Method to remove events from registry when stale + archived
 void GlobalRegistry::remove_event(const std::string& id) {
     std::lock_guard<std::mutex> lock(event_mtx);
     event_map.erase(id);
 }
 
+
+// ASSET LOGIC
+// Searches for existing or creates new asset state class using helpers from DatabaseManager.cpp
 std::shared_ptr<BaseAsset> GlobalRegistry::get_asset(int id) {
     std::lock_guard<std::mutex> lock(asset_mtx);
     if (asset_map.count(id)) return asset_map[id];
 
-    AssetMetadata meta = get_asset_metadata(id);
+    AssetMetadata meta = get_asset_metadata(id); // returns asset name + type if found (defaults to Unknown mine)
     if (!meta.valid) return nullptr;
 
     std::shared_ptr<BaseAsset> asset;
@@ -111,6 +128,17 @@ std::shared_ptr<BaseAsset> GlobalRegistry::get_asset(int id) {
     return asset;
 }
 
+
+// Method to iterate through all assets in asset registry (thread-safe) without individual mutex locks/unlocks for each one
+void GlobalRegistry::for_each_asset(std::function<void(std::shared_ptr<BaseAsset>)> func) {
+    std::lock_guard<std::mutex> lock(asset_mtx);
+    for (auto& [id, asset] : asset_map) {
+        func(asset);
+    }
+}
+
+
+// Searches for existing or creates new supply_line state class as applicable
 std::shared_ptr<BaseSupplyLine> GlobalRegistry::get_supply_line(int id, const std::string& type) {
     std::lock_guard<std::mutex> lock(supply_mtx);
     if (supply_map.count(id)) return supply_map[id];
@@ -132,13 +160,8 @@ std::shared_ptr<BaseSupplyLine> GlobalRegistry::get_supply_line(int id, const st
     return line;
 }
 
-void GlobalRegistry::for_each_asset(std::function<void(std::shared_ptr<BaseAsset>)> func) {
-    std::lock_guard<std::mutex> lock(asset_mtx);
-    for (auto& [id, asset] : asset_map) {
-        func(asset);
-    }
-}
 
+// Method to iterate through all supply lines in supply registry (thread-safe) without individual mutex locks/unlocks for each one
 void GlobalRegistry::for_each_supply_line(std::function<void(std::shared_ptr<BaseSupplyLine>)> func) {
     std::lock_guard<std::mutex> lock(supply_mtx);
     for (auto& [id, line] : supply_map) {

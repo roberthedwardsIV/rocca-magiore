@@ -2,14 +2,16 @@
 #define MINE_ASSET_HPP
 
 #include "BaseAsset.hpp"
-#include <vector>
 
 struct MineState {
-    float op_health;    
-    float fin_health;   
-    float threat_level; 
+    float production_rate;   
+    float proven_reserves;   
+    float cost_per_unit;     
+    float op_health;         
+    float threat_level;      
     
-    float unc_op, unc_fin, unc_threat; 
+    float unc_prod, unc_res, unc_cost, unc_op, unc_threat; 
+
     long long last_update;
 };
 
@@ -22,7 +24,6 @@ public:
 protected:
     MineState current_state;
     float process_noise;
-
     void apply_signal(const json& sig);
 };
 

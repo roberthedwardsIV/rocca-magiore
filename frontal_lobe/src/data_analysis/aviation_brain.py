@@ -81,7 +81,6 @@ def check_seismic_muting(cur, m, icao):
 
 # Capacity check function: generates signals when the weekly capacity rate decreases by 60% or more
 def check_capacity_gate(cur):
-    """Logic #3 & #9: Capacity Analysis against Baselines"""
     cur.execute("SELECT weekly_frequency FROM baselines_aviation WHERE route_key = 'REGIONAL_ASSET_LOGISTICS'")
     res = cur.fetchone()
     if not res: return
@@ -96,33 +95,26 @@ def check_capacity_gate(cur):
         })
 
 
-# 
+# Environmental check function: searches for planes that might be fighting wildfires
 def check_environmental_gate(m, icao):
-    """Logic #6 (Env): Wildfire detection via low-altitude loitering"""
-    # Pattern: Low altitude + Slow speed + Not near a known airport/mine
     if m['alt'] < 6000 and m['vel'] < 130:
         push_signal("WILDFIRE_PROBABLE", "AERIAL_ENV", "environment", {
             "severity": 0.4, "lat": m['lat'], "lon": m['lon'], "icao": icao
         })
 
 
-#
+# Safety check function: looks for rapidly descending planes and loss of signal at altitude indicative of a crash or issue.
 def check_safety_gates(m, icao):
-    """Logic #1 & #5: Crash and Corridor Deviations"""
-    # Emergency Descent Rate (> 4,500 ft/min)
     if m['v_rate'] < -4500 and m['alt'] > 4000:
         push_signal("AIRSPACE_ANOMALY", icao, "airspace", {
             "severity": 1.0, "context": "Rapid unplanned altitude loss"
         })
-    
-    # Signal Loss at Altitude (Shadowing Signal #5)
-    # If a plane was high and suddenly stops updating (handled by Redis EXPIRE in ingest)
+    # Signal Loss at Altitude (Shadowing Signal #5) -> If a plane was high and suddenly stops updating (handled by Redis EXPIRE in ingest)
 
 
 # Financial intelligence function: tracks executive movement from mining headquarters 
 # to offshore tax havens (Jersey, Cayman Islands, Switzerland, etc.)
 def check_financial_shuttles(m, icao, profile):
-    """Logic #8: Tax Haven Shuttle Detection"""
     if profile and profile['cat'] == 'Corporate_Exec_Probable':
         # BBOX covering common offshore banking hubs (Simplified check)
         # Lat/Lon ranges for Swiss/Channel/Cayman corridors
@@ -142,25 +134,18 @@ def check_financial_shuttles(m, icao, profile):
 # Airspace restriction function: monitors for sudden "no-fly" zones or deviations 
 # by 100% of civilian traffic in a commodity-heavy area
 def check_restriction_gate(cur, m):
-    """Logic #4: Dynamic Airspace Restrictions (Pre-War/Coup)"""
-    # Check if a flight is skirting or diverting from a historically high-traffic 
-    # corridor in a high-risk mining region
     cur.execute("""
         SELECT 1 FROM assets 
         WHERE ST_DWithin(ST_SetSRID(ST_MakePoint(%s, %s), 4326), geom, 2.0)
     """, (m['lon'], m['lat']))
     if cur.fetchone():
-        # If the plane is performing a 180-turn or wide diversion at high altitude
         if m['alt'] > 20000 and abs(m['v_rate']) < 100 and m['vel'] > 300:
-            # Check logic for 'Skirt' behavior (Simplified)
             pass
 
 
 # Maintenance intelligence function: flags grounded fleets. If a specific 
 # logistics aircraft from our watchlist stops moving for > 14 days.
 def check_maintenance_lag(cur):
-    """Logic #10: Maintenance and Operational Lag Detection"""
-    # Runs daily or hourly. Looks for watchlist planes with no 'ACTIVE' legs.
     cur.execute("""
         SELECT icao_hex, owner_entity 
         FROM aircraft_profiles 

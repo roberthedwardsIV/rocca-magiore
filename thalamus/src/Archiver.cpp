@@ -6,6 +6,7 @@
 #include "Archiver.hpp"
 #include "GlobalRegistry.hpp"
 #include "DatabaseManager.hpp"
+#include "tickers/TickerRegistry.hpp"
 #include <chrono>
 #include <thread>
 #include <iostream>
@@ -42,6 +43,10 @@ void Archiver::run_snapshotter() {
 
         GlobalRegistry::for_each_supply_line([](std::shared_ptr<BaseSupplyLine> line) {
             save_to_database(line->get_json_state());
+        });
+        
+        TickerRegistry::for_each_ticker([](std::shared_ptr<BaseTicker> ticker) {
+            save_ticker_state(ticker->get_json_state());
         });
         
         std::cout << "[SNAPSHOTTER] Infrastructure state sync complete." << std::endl;

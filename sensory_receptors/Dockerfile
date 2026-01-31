@@ -8,6 +8,11 @@ RUN apt-get update && apt-get install -y \
     libswresample-dev libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN git clone https://github.com/InteractiveBrokers/twsapi.git /tmp/twsapi && \
+    cd /tmp/twsapi/source/cppclient && \
+    mkdir build && cd build && \
+    cmake .. && make && make install && ldconfig
+
 RUN curl -fsSL https://deno.land/x/install/install.sh | sh
 ENV DENO_INSTALL="/root/.deno"
 ENV PATH="$DENO_INSTALL/bin:$PATH"
@@ -45,6 +50,7 @@ RUN rm -rf build && mkdir build && cd build && \
 RUN echo "#!/bin/bash\n\
 ./build/seismic_engine &\n\
 ./build/aviation_ingest &\n\
+./build/ibkr_ingest &\n\
 ./build/src/data_sources/med_streams/radio_supervisor &\n\
 ./build/twitter_recon" > start.sh
 

@@ -5,6 +5,7 @@
 */
 #include "Propagator.hpp"
 #include "GlobalRegistry.hpp"
+#include "finance/SignalEngine.hpp"
 #include "DatabaseManager.hpp"
 #include <iostream>
 #include <cmath>
@@ -95,6 +96,9 @@ void Propagator::propagate_asset_change(int asset_id) {
     json state = asset->get_json_state();
     float op_health = state.value("op_health", 1.0f);
 
+    std::string entity_key = "ASSET_" + std::to_string(asset_id);
+    SignalEngine::calculate_market_deltas(entity_id, op_health);
+
     if (op_health < 0.6f) {
         std::vector<int> lines = get_connected_supply_lines(asset_id);
         for (int lid : lines) {
@@ -116,7 +120,8 @@ void Propagator::propagate_supply_change(int line_id) {
 
     json state = line->get_json_state();
     float flow = state.value("flow_capacity", state.value("throughput", state.value("transit_capacity", 1.0f)));
-
+    std::string entity_key = "SUPPLY_" + std::to_string(line_id);
+    SignalEngine::calculate_market_deltas(entity_key, flow);
     if (flow < 0.7f) {
         std::vector<int> assets = get_connected_assets(line_id);
         for (int aid : assets) {

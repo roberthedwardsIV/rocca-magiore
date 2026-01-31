@@ -1,13 +1,23 @@
 #ifndef RAIL_YARD_HPP
 #define RAIL_YARD_HPP
 
-#include "BaseSupplyLine.hpp" 
+#include "BaseSupplyLine.hpp"
+
+struct RailYardSpecs {
+    float base_dwell_time_hours;     
+    float jam_threshold;             
+    float gridlock_penalty_factor;   
+    float critical_failure_threshold;
+};
 
 struct RailYardState {
-    float processing_health; 
-    float utilization;      
+    float switch_health;         
+    float labor_availability;    
+    float yard_occupancy;        
+    float current_dwell_time_hours; 
+
+    float unc_sw, unc_lab, unc_occ;
     
-    float unc_proc, unc_util; 
     long long last_update;
 };
 
@@ -19,8 +29,9 @@ public:
 
 protected:
     RailYardState current_state;
+    RailYardSpecs specs;
     float process_noise;
-
+    
     void apply_signal(const json& sig);
 };
 

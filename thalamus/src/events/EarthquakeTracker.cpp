@@ -1,35 +1,33 @@
 #include "EarthquakeTracker.hpp"
 #include <iostream>
+#include <cmath>
 
-// Class constructor
+// Constructor (sends to process_packet upon creation)
 EarthquakeTracker::EarthquakeTracker(const json& initial_sig) {
     entity_id = initial_sig["entity_id"];
     entity_type = "earthquake";
 
-    current_state.uncertainty = 1.0f; // High starting uncertainty due to single source
-    current_state.process_noise = 0.005f; // Small decrease of certainty over time without updates
-    current_state.event_time = initial_sig["timestamp"]; // First signal will determine event time
-    
-    if (initial_sig["data"].contains("lat")) {
-        current_state.lat = initial_sig["data"]["lat"];
-        current_state.lon = initial_sig["data"]["lon"];
-    } else {
-        current_state.lat = 0.0f;
-        current_state.lon = 0.0f;
-    }
-    
-    // Initialize other metrics to safe defaults
+    // Tracker initialized with high uncertainty (reduced as reliable signals pour in)
+    current_state.uncertainty = 1.0f; 
+    current_state.process_noise = 0.005f; 
+    current_state.event_time = initial_sig["timestamp"]; 
+    current_state.lat = 0.0f;
+    current_state.lon = 0.0f;
     current_state.magnitude = 0.0f;
     current_state.intensity = 0.0f;
-    // We call process_packet directly to ensure the first signal is logged in history_log
+
     process_packet(initial_sig);
 }
 
-// Internal Math Engine: Processes a single packet's data into the current state
+
+// Applies signal using one-dimensional Kalman Filter
 void EarthquakeTracker::apply_signal_to_state(const RawPacket& pkt) {
-    float R = pkt.reliability; 
     float P_pred = current_state.uncertainty + current_state.process_noise;
-    float K = P_pred / (P_pred + R); // K = factor by which new data affects current state stats (Kalman gain)
+
+    float R = pkt.reliability; 
+
+    // K = factor by which new data affects current state stats (Kalman gain)
+    float K = P_pred / (P_pred + R); 
     
     if (pkt.data.contains("mag") && !pkt.data["mag"].is_null()) {
         float z_mag = pkt.data["mag"];
@@ -52,13 +50,14 @@ void EarthquakeTracker::apply_signal_to_state(const RawPacket& pkt) {
     current_state.update_time = pkt.timestamp;
 }
 
-// Rewind Logic: Resets state and replays history_log in chronological order
+
+// Reset state to start conditions before replaying entire history when receiving late data
 void EarthquakeTracker::full_recalculate() {
-    // Reset state to birth conditions before replaying history
     current_state.magnitude = 0;
     current_state.intensity = 0;
     current_state.uncertainty = 1.0f;
-    current_state.lat = history_log.front().data.value("lat", 0.0f); // Anchor to initial guess
+
+    current_state.lat = history_log.front().data.value("lat", 0.0f);
     current_state.lon = history_log.front().data.value("lon", 0.0f);
 
     for (const auto& pkt : history_log) {
@@ -66,68 +65,58 @@ void EarthquakeTracker::full_recalculate() {
     }
 }
 
-// Packet processor (main control method)
+
+// Packet processor (main control method sending data to apply_signal_to_state)
 void EarthquakeTracker::process_packet(const json& sig) {
-    std::lock_guard<std::mutex> lock(state_mutex); // Ensures we only edit with one signal packet at a time
+    std::lock_guard<std::mutex> lock(state_mutex); 
 
     RawPacket pkt;
     pkt.timestamp = sig["timestamp"];
     pkt.data = sig["data"];
-    pkt.reliability = sig["reliability_noise"];
+    pkt.reliability = sig.value("reliability_noise", 0.5f);
 
-    // Check if this signal is arriving "out of order" (earlier than our last update)
+    // Check if this signal is arriving "out of order" (earlier than our last update) + recalculate if so
     bool is_late = (!history_log.empty() && pkt.timestamp < history_log.back().timestamp);
-    
     history_log.push_back(pkt);
-
     if (is_late) {
-        std::cout << "[THALAMUS] Late data detected (" << pkt.timestamp << "). Re-ordering history..." << std::endl;
-        
-        // Sort history by timestamp to ensure chronological replay
         std::sort(history_log.begin(), history_log.end(), 
                   [](const RawPacket& a, const RawPacket& b) { return a.timestamp < b.timestamp; });
-        
         full_recalculate();
     } else {
-        // Normal behavior: Just apply the signal forward
         apply_signal_to_state(pkt);
     }
 
     current_state.zr_score = calculate_zr_score();
 }
 
-// Controller for zr_score caclulator (calls run_zr_formula only)
+
+// Calculates earthquake zr_score by normalizing intensity, magnitude and applying confidence factor (0-1)
 float EarthquakeTracker::calculate_zr_score() {
-    return run_zr_formula();
+    float norm_mmi = current_state.intensity / 12.0f;
+    float norm_mag = current_state.magnitude / 10.0f;
+    float severity = (norm_mmi + 0.01f) * (norm_mag + 0.01f);
+    float confidence = 1.0f - std::min(1.0f, current_state.uncertainty);
+    
+    return severity * confidence;
 }
 
-float EarthquakeTracker::run_zr_formula() {
-    // Normalized intensity + magnitude used
-    float normalized_mmi = current_state.intensity / 12.0f;
-    float normalized_mag = current_state.magnitude / 10.0f;
 
-    // Combined severity score (added safety net for missing mag or mmi to avoid 0 scores)
-    float severity = (normalized_mmi + 0.1) * (normalized_mag + 0.1);
-
-    // Uncertainty correction (penalizes uncertain triggers)
-    float confidence_multiplier = 1.0f - std::min(1.0f, current_state.uncertainty);
-    return severity * confidence_multiplier;
-}
-
-// Controller for calculating staleness of signals (to remove old ones)
+// Controller for calculating staleness of signals (to archive to db after 1 hour of silence)
 bool EarthquakeTracker::is_stale(long long current_time) const {
     const long long ONE_HOUR_MS = 3600000;
     return (current_time - current_state.update_time) > ONE_HOUR_MS;
 }
 
+
+// Pull last update time
 long long EarthquakeTracker::get_last_update_time() const {
     return current_state.update_time;
 }
 
+
 // Function to package state vectors and full history into json for DB archiving
 json EarthquakeTracker::to_json() const {
     json j;
-    
     j["entity_id"] = entity_id;
     j["entity_type"] = entity_type;
     j["final_mag"] = current_state.magnitude;

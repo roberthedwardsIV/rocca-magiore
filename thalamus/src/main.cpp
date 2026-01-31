@@ -1,22 +1,54 @@
 /**
-* main.cpp: The main controller for the thalamus that starts the threads for the Archiver,
-*           connects and listens to raw_signals from the corpus collosum, and routes all
-*           signals to the dispatcher for proper routing
-*/
+*   1 - Initializes connection to PostgreSQL/PostGIS DB (hippocampus)
+*   2 - Initializes financial data/tickers from TickerRegistry
+*   3 - Starts background threads for Reaper + Snapshotter and detaches
+*   4 - Establishes redis connection via connect_redis() helper
+*   5 - Runs main event loop
+*       a) Listens to "raw_signals" redis channel
+*       b) Routes incoming signal packets to the Dispatcher
+ */
 #include <iostream>
 #include <thread>
+#include <chrono>
 #include <hiredis/hiredis.h>
 #include <nlohmann/json.hpp>
+
 #include "DatabaseManager.hpp"
-#include "GlobalRegistry.hpp"
 #include "Dispatcher.hpp"
 #include "Archiver.hpp"
+#include "tickers/TickerRegistry.hpp"
 
 using json = nlohmann::json;
 
+// Helper function: establishes redis connnection with 5 retries as needed before quitting
+redisContext* connect_redis(const char* host, int port) {
+    redisContext* c = nullptr;
+    int retries = 5;
+    
+    while (retries > 0) {
+        c = redisConnect(host, port);
+        if (c != nullptr && !c->err) {
+            std::cout << "[main.cpp] Connected to Redis at " << host << ":" << port << std::endl;
+            return c;
+        }
+        
+        std::cerr << "[main.cpp] Redis connection failed. Retrying in 2s..." << std::endl;
+        if (c) redisFree(c);
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        retries--;
+    }
+    return nullptr;
+}
+
+
 int main() {
     if (!init_database()) {
-        std::cerr << "[FATAL] Could not connect to Hippocampus, Thalamus shutting down.\n";
+        std::cerr << "[main.cpp](FATAL) Could not connect to Hippocampus, Thalamus shutting down.\n";
+        return 1;
+    }
+
+    if (!TickerRegistry::initialize_from_db()) {
+        std::cerr << "[main.cpp](FATAL) Ticker Registry failed to load. Market data unreachable.\n";
         return 1;
     }
 
@@ -25,28 +57,33 @@ int main() {
     reaper_thread.detach();
     snapshot_thread.detach();
 
-    redisContext *c = redisConnect("corpus_callosum", 6379);
-    if (c == NULL || c->err) {
-        std::cerr << "[FATAL] Redis connection error: " << (c ? c->errstr : "null context") << std::endl;
-        return 1;
-    }
+    redisContext *c = connect_redis("corpus_callosum", 6379);
+    if (!c) return 1;
 
-    std::cout << "[THALAMUS] Supervisor Online. Signal Routing and Handling Active.\n";
+    std::cout << "[main.cpp] Supervisor Online. Signal Routing and Handling Active.\n";
 
     while (true) {
         redisReply *reply = (redisReply*)redisCommand(c, "BRPOP raw_signals 0");
         
-        if (reply != nullptr && reply->type == REDIS_REPLY_ARRAY && reply->elements == 2) {
-            try {
-                json sig = json::parse(reply->element[1]->str);
-                
-                Dispatcher::route_signal(sig);
-
-            } catch (const std::exception& e) {
-                std::cerr << "[JSON ERR] Failed to route signal: " << e.what() << std::endl;
+        if (reply != nullptr) {
+            if (reply->type == REDIS_REPLY_ARRAY && reply->elements == 2) {
+                try {
+                    json sig = json::parse(reply->element[1]->str);
+                    Dispatcher::route_signal(sig);
+                } catch (const std::exception& e) {
+                    std::cerr << "[main.cpp](JSON ERR) Route failed: " << e.what() << std::endl;
+                }
+            }
+            freeReplyObject(reply);
+        } else {
+            std::cerr << "[main.cpp] Connection lost. Reconnecting..." << std::endl;
+            redisFree(c);
+            c = connect_redis("corpus_callosum", 6379);
+            if (!c) {
+                std::cerr << "[main.cpp](FATAL) Could not reconnect to Redis." << std::endl;
+                return 1;
             }
         }
-        freeReplyObject(reply);
     }
 
     redisFree(c);

@@ -4,11 +4,14 @@
 #include "BaseAsset.hpp"
 
 struct RefineryState {
-    float op_health;          
-    float containment_risk;   
-    float fin_health;         
+    float throughput_rate;   
+    float storage_level;     
+    float refining_cost;     
+    float op_health;         
+    float containment_risk;  
     
-    float unc_op, unc_risk, unc_fin; 
+    float unc_thru, unc_store, unc_cost, unc_op, unc_risk;
+    
     long long last_update;
 };
 
@@ -21,7 +24,6 @@ public:
 protected:
     RefineryState current_state;
     float process_noise;
-
     void apply_signal(const json& sig);
 };
 

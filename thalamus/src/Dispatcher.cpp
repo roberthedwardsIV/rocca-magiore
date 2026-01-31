@@ -2,35 +2,21 @@
 * Dispatcher.cpp: routes each raw_signal to its proper handling functions based on its
 *                 entity_type. Each type of signal is then checked against list of active
 *                 state vectors to determine if merging or spawning is needed. Dispatcher 
-*                 gives the proper instructions to the GlobalRegistry and sends signals 
-*                 for propagation/processing. 
+*                 gives the proper instructions to the GlobalRegistry + TickerRegistry 
+*                 and sends signals for propagation/processing. 
 */
 #include "Dispatcher.hpp"
 #include "GlobalRegistry.hpp"
 #include "DatabaseManager.hpp"
 #include "events/EarthquakeTracker.hpp"
+#include "tickers/TickerRegistry.hpp"
 #include "Propagator.hpp"
+
 #include <iostream>
 #include <hiredis/hiredis.h>
 
-void trigger_twitter_recon(const std::string& id, const std::string& type, float lat, float lon, long long ts) {
-    redisContext* c = redisConnect("corpus_callosum", 6379);
-    if (c && !c->err) {
-        json task;
-        task["task_id"] = id;       
-        task["type"] = type;        
-        task["lat"] = lat;
-        task["lon"] = lon;
-        task["timestamp"] = ts;
 
-        std::string payload = task.dump();
-        redisCommand(c, "PUBLISH twitter_recon_tasks %s", payload.c_str());
-        
-        redisFree(c);
-        std::cout << "[DISPATCHER] Triggered " << type << " recon for " << id << std::endl;
-    }
-}
-
+// Signal router (by "entity_type")
 void Dispatcher::route_signal(const json& sig) {
     std::string type = sig.value("entity_type", "unknown");
 
@@ -50,13 +36,20 @@ void Dispatcher::route_signal(const json& sig) {
                type == "airspace" || type == "canal_route" || 
                type == "canal_lock") {
         handle_supply_signal(sig);
+    
+    // TICKER HANDLING
+    } else if (type == "stock" || type == "future" || 
+             type == "option" || type == "commodity_spot") {
+        handle_ticker_signal(sig);
 
     } else {
         std::cerr << "[DISPATCHER] Unknown entity type: " << type << std::endl;
     }
 }
 
- 
+
+// ALL 3 HANDLER FUNCTIONS BELOW PASS SIGNAL OFF TO PROPAGATOR
+// Handles event signals by searching for existing events to merge with or spawning a new one + applying signal data
 void Dispatcher::handle_event_signal(const json& sig) {
     std::string id = sig.value("entity_id", "unknown");
     float lat = sig["data"].value("lat", 0.0f);
@@ -105,6 +98,7 @@ void Dispatcher::handle_event_signal(const json& sig) {
 }
 
 
+// Handles asset signals by finding the applicable asset and applying signal data
 void Dispatcher::handle_asset_signal(const json& sig) {
     int id = sig.value("asset_id", -1);
     if (id == -1) return;
@@ -116,6 +110,7 @@ void Dispatcher::handle_asset_signal(const json& sig) {
 }
 
 
+// Handles supply line signals by finding the applicable supply line and applying signal data
 void Dispatcher::handle_supply_signal(const json& sig) {
     int id = sig.value("line_id", -1);
     std::string type = sig.value("entity_type", "");
@@ -128,6 +123,40 @@ void Dispatcher::handle_supply_signal(const json& sig) {
     }
 }
 
+
+// Handles ticker signals by updating ticker registry and applying new data packets
+void Dispatcher::handle_ticker_signal(const json& sig) {
+    std::string symbol = sig.value("symbol", "");
+    if (symbol.empty()) return;
+
+    auto ticker = TickerRegistry::get_ticker(symbol);
+    if (ticker) {
+        ticker->process_quote(sig);
+    }
+}
+
+
+// Helper function: triggers a Twitter search by posting instructions to the "twitter_recon_tasks" redis channel
+void trigger_twitter_recon(const std::string& id, const std::string& type, float lat, float lon, long long ts) {
+    redisContext* c = redisConnect("corpus_callosum", 6379);
+    if (c && !c->err) {
+        json task;
+        task["task_id"] = id;       
+        task["type"] = type;        
+        task["lat"] = lat;
+        task["lon"] = lon;
+        task["timestamp"] = ts;
+
+        std::string payload = task.dump();
+        redisCommand(c, "PUBLISH twitter_recon_tasks %s", payload.c_str());
+        
+        redisFree(c);
+        std::cout << "[DISPATCHER] Triggered " << type << " recon for " << id << std::endl;
+    }
+}
+
+
+// Helper function: extracts the earthquake station codes from the STA_NET codes in the db
 std::string Dispatcher::extract_station_prefix(const std::string& entity_id) {
     size_t last_underscore = entity_id.find_last_of('_');
     if (last_underscore != std::string::npos) {

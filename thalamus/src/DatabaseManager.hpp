@@ -31,6 +31,7 @@ struct SupplyExposure {
 bool init_database();
 
 void save_to_database(const json& final_state);
+void save_ticker_state(const json& state);
 
 json query_database_for_event(std::string id, float lat, float lon, long long timestamp, std::string type);
 AssetMetadata get_asset_metadata(int asset_id);
