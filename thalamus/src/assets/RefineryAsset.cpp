@@ -1,35 +1,56 @@
 #include "RefineryAsset.hpp"
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 // Constructor
 RefineryAsset::RefineryAsset(int id, std::string name) 
     : BaseAsset(id, name, "refinery") {
     
-    this->process_noise = 0.002f; 
-    
+    this->process_noise = 0.002f;
     current_state = {
-        0.9f, 0.5f, 
-        5.0f, 
-        1.0f, 0.0f,
-        0.5f, 0.5f, 0.5f, 0.5f, 0.5f,
+        // Physical Defaults (Copper Smelter scale)
+        3000.0f,        // Nameplate Capacity (Tonnes/day)
+        2800.0f,        // Initial Throughput
+        0.5f,           // Ore Inventory
+        1.0f,           // Op Health
+        0.0f,           // Containment Risk (Tailings)
+
+        // Financial Defaults
+        9000.0f,        // Metal Spot Price ($/tonne - e.g. Copper)
+        6000.0f,        // Ore Cost Basis ($/tonne of metal content)
+        800.0f,         // Processing Cost ($/tonne) - High energy cost
+        40000000.0f,    // Fixed Costs ($40M/yr)
+        7.0f,           // Base Multiple (Smelters trade higher than oil refineries)
+
+        // Metallurgy
+        0.96f,          // Recovery Rate (96%)
+
+        // Calculated Placeholders
+        0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+
+        // Uncertainties
+        0.5f, 0.5f, 0.5f, 0.5f, 
+
+        // Last update time
         0LL
     };
+    recalculate_valuation();
 }
 
 
-// Packet Processor -> sends off to apply_signal() with mutex locked
+// Packet processor + repricing
 void RefineryAsset::process_packet(const json& sig) {
     std::lock_guard<std::mutex> lock(asset_mutex);
     apply_signal(sig);
+    recalculate_valuation(); 
 }
 
 
-// Signal applier -> updates refinery state based on new data received + Kalman logic
+// Math to update refinery state with updated data
 void RefineryAsset::apply_signal(const json& sig) {
     current_state.unc_thru += process_noise;
-    current_state.unc_store += process_noise;
-    current_state.unc_cost += process_noise;
+    current_state.unc_inv += process_noise;
     current_state.unc_op += process_noise;
     current_state.unc_risk += process_noise;
 
@@ -38,75 +59,117 @@ void RefineryAsset::apply_signal(const json& sig) {
     std::string category = sig.value("category", "none");
     float severity = sig.value("severity", 0.0f);
 
-    // Processing Rate Updates
-    if (category == "throughput") {
+    // Strict updates (market + filings data)
+    if (category == "filing") {
+        if (sig.contains("fixed_costs")) 
+            current_state.fixed_costs = sig["fixed_costs"].get<float>();
+        
+        if (sig.contains("processing_cost")) 
+            current_state.processing_cost = sig["processing_cost"].get<float>();
+        
+        if (sig.contains("base_multiple")) 
+            current_state.base_multiple = sig["base_multiple"].get<float>();
+            
+        if (sig.contains("nameplate_capacity")) 
+            current_state.nameplate_capacity = sig["nameplate_capacity"].get<float>();
+            
+        if (sig.contains("recovery_rate"))
+            current_state.recovery_rate = sig["recovery_rate"].get<float>();
+
+        if (sig.contains("throughput")) {
+            current_state.throughput_rate = sig["throughput"].get<float>();
+            current_state.unc_thru = process_noise; 
+        }
+    }
+    // Spot price + ore price updates
+    else if (category == "market") {
+        if (sig.contains("price")) { // Metal Spot
+            current_state.metal_spot_price = sig["price"].get<float>();
+        }
+        if (sig.contains("ore_cost")) { // Input Cost
+            current_state.ore_cost_basis = sig["ore_cost"].get<float>();
+        }
+    }
+
+    // Frontal lobe/sensory receptor updates
+    else if (category == "throughput") {
         if (sig.contains("value")) {
-            // KALMAN UPDATE for Throughput
             float z_thru = sig["value"].get<float>();
             float K = current_state.unc_thru / (current_state.unc_thru + R);
             current_state.throughput_rate += K * (z_thru - current_state.throughput_rate);
             current_state.unc_thru *= (1.0f - K);
         }
     }
-    // Operational + Cost Updates
     else if (category == "op") {
         float z = 1.0f - severity;
         float K = current_state.unc_op / (current_state.unc_op + R);
         current_state.op_health += K * (z - current_state.op_health);
         current_state.unc_op *= (1.0f - K);
-
-        if (current_state.op_health < 1.0f) {
-             float brokenness = (1.0f - current_state.op_health);
-             float strain = current_state.throughput_rate;
-             
-             float inefficiency_penalty = brokenness * strain; 
-             current_state.refining_cost *= (1.0f + inefficiency_penalty);
-             
-             current_state.containment_risk += (inefficiency_penalty * 0.1f);
-        }
     } 
-    // Financial + Cost Updates
-    else if (category == "fin") {
-        float z_cost = current_state.refining_cost * (1.0f + severity); 
-        float K = current_state.unc_cost / (current_state.unc_cost + R);
-        current_state.refining_cost += K * (z_cost - current_state.refining_cost);
-        current_state.unc_cost *= (1.0f - K);
-    }
-    // External Threat Updates
     else if (category == "threat") {
         float K = current_state.unc_risk / (current_state.unc_risk + R);
         current_state.containment_risk += K * (severity - current_state.containment_risk);
         current_state.unc_risk *= (1.0f - K);
     }
     else if (category == "logistics") {
-        // Storage issues (inability to offload product)
         if (sig.contains("value")) {
-            float z_store = sig["value"].get<float>();
-            float K = current_state.unc_store / (current_state.unc_store + R);
-            current_state.storage_level += K * (z_store - current_state.storage_level);
-            current_state.unc_store *= (1.0f - K);
-            
-            // High storage levels increase cost (demurrage)
-            if (current_state.storage_level > 0.9f) {
-                current_state.refining_cost *= 1.05f; 
-            }
+            float z_inv = sig["value"].get<float>();
+            float K = current_state.unc_inv / (current_state.unc_inv + R);
+            current_state.ore_inventory += K * (z_inv - current_state.ore_inventory);
+            current_state.unc_inv *= (1.0f - K);
         }
     }
-
+    
     current_state.last_update = sig.value("timestamp", 0LL);
 }
 
 
-// JSON packager for archiving state history to db
+// Valuation Calculation (EV/EBIDA)
+void RefineryAsset::recalculate_valuation() {
+    // Utilization
+    current_state.utilization_rate = current_state.throughput_rate / std::max(1.0f, current_state.nameplate_capacity);
+    
+    // Recovery & Cost adjustment (from op_health)
+    float health_penalty = (1.0f - current_state.op_health);
+    float effective_recovery = current_state.recovery_rate - (health_penalty * 0.05f); // Max 5% yield loss
+    current_state.effective_cost = current_state.processing_cost * (1.0f + (health_penalty * 0.2f)); // +20% energy cost
+
+    // Calculate spread of refining
+    float revenue_per_tonne = current_state.metal_spot_price * effective_recovery;
+    current_state.smelting_margin = revenue_per_tonne - current_state.ore_cost_basis;
+
+    // Annualized EBITDA
+    float annual_tonnes = current_state.throughput_rate * 365.0f;
+    
+    // Gross Profit = Tonnes * (Smelting Margin - Processing Cost)
+    float gross_profit_per_tonne = current_state.smelting_margin - current_state.effective_cost;
+    current_state.gross_profit = annual_tonnes * gross_profit_per_tonne;
+    
+    current_state.ebitda = current_state.gross_profit - current_state.fixed_costs;
+
+    // EV Calculation
+    float risk_penalty = current_state.containment_risk * 5.0f; // Very harsh penalty
+    current_state.adjusted_multiple = std::max(1.0f, current_state.base_multiple - risk_penalty);
+
+    current_state.enterprise_value = current_state.ebitda * current_state.adjusted_multiple;
+}
+
+
+// JSON Packager
 json RefineryAsset::get_json_state() const {
     std::lock_guard<std::mutex> lock(asset_mutex);
     return {
         {"asset_id", asset_id},
         {"name", name},
         {"entity_type", entity_type},
-        {"throughput_rate", current_state.throughput_rate},
-        {"storage_level", current_state.storage_level},
-        {"refining_cost", current_state.refining_cost},
+        {"enterprise_value", current_state.enterprise_value},
+        {"ebitda", current_state.ebitda},
+        {"smelting_margin", current_state.smelting_margin},
+        {"gross_profit", current_state.gross_profit},
+        {"throughput_tonnes", current_state.throughput_rate},
+        {"metal_price", current_state.metal_spot_price},
+        {"ore_cost", current_state.ore_cost_basis},
+        {"recovery_rate", current_state.recovery_rate},
         {"op_health", current_state.op_health},
         {"containment_risk", current_state.containment_risk},
         {"last_update", current_state.last_update}

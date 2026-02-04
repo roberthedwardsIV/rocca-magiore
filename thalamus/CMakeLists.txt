@@ -11,6 +11,8 @@ include_directories(
     src/events
     src/assets 
     src/supply_lines 
+    src/finance    # Added
+    src/tickers    # Added
     /usr/include/postgresql
 )
 
@@ -21,12 +23,15 @@ add_executable(thalamus_engine
     src/Propagator.cpp
     src/Archiver.cpp
     src/DatabaseManager.cpp
+    
     # Events
     src/events/EarthquakeTracker.cpp
-    # Assets - ADD EVERY SUBCLASS CPP HERE
+    
+    # Assets
     src/assets/MineAsset.cpp
     src/assets/RefineryAsset.cpp
-    # Supply Lines - ADD EVERY SUBCLASS CPP HERE
+    
+    # Supply Lines
     src/supply_lines/RailLine.cpp
     src/supply_lines/RailYard.cpp
     src/supply_lines/MaritimeRoute.cpp
@@ -38,6 +43,14 @@ add_executable(thalamus_engine
     src/supply_lines/Airspace.cpp
     src/supply_lines/CanalRoute.cpp
     src/supply_lines/CanalLock.cpp
+
+    # Finance & Tickers (CRITICAL MISSING FILES)
+    src/finance/SignalEngine.cpp
+    src/tickers/TickerRegistry.cpp
+    src/tickers/StockTicker.cpp
+    src/tickers/FutureTicker.cpp
+    src/tickers/OptionTicker.cpp
+    src/tickers/CommoditySpotTicker.cpp
 )
 
 target_link_libraries(thalamus_engine 

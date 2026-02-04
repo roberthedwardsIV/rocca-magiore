@@ -97,7 +97,7 @@ void Propagator::propagate_asset_change(int asset_id) {
     float op_health = state.value("op_health", 1.0f);
 
     std::string entity_key = "ASSET_" + std::to_string(asset_id);
-    SignalEngine::calculate_market_deltas(entity_id, op_health);
+    SignalEngine::calculate_market_deltas(entity_key, op_health);
 
     if (op_health < 0.6f) {
         std::vector<int> lines = get_connected_supply_lines(asset_id);

@@ -68,7 +68,7 @@ void EarthquakeTracker::full_recalculate() {
 
 // Packet processor (main control method sending data to apply_signal_to_state)
 void EarthquakeTracker::process_packet(const json& sig) {
-    std::lock_guard<std::mutex> lock(state_mutex); 
+    std::lock_guard<std::mutex> lock(data_mutex); 
 
     RawPacket pkt;
     pkt.timestamp = sig["timestamp"];

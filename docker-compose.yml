@@ -63,6 +63,18 @@ services:
       - rocco_net
     restart: always
 
+# ------------------ Brainstem (C++ Execution Engine) ------------------
+  brainstem:
+    build: ./brainstem
+    container_name: brainstem
+    environment:
+      - REDIS_HOST=corpus_callosum
+    depends_on:
+      - corpus_callosum
+    networks:
+      - rocco_net
+    restart: always
+    
   # ----------------- Hippocampus (Postgres/gis SQL Database) -----------------
   hippocampus:
     image: postgis/postgis:15-3.3

@@ -4,13 +4,29 @@
 #include "BaseAsset.hpp"
 
 struct RefineryState {
-    float throughput_rate;   
-    float storage_level;     
-    float refining_cost;     
-    float op_health;         
-    float containment_risk;  
+    float nameplate_capacity; // Max Tonnes per day (tpd)
+    float throughput_rate;    // Current tpd
+    float ore_inventory;      // 0.0 to 1.0 
+    float op_health;          // 0.0 to 1.0
+    float containment_risk;   // 0.0 to 1.0 
+
+    float metal_spot_price;   // $/tonne
+    float ore_cost_basis;     // $/tonne
+    float processing_cost;    // $/tonne
+    float fixed_costs;        // Annual Fixed ($)
+    float base_multiple;      // EV/EBITDA
+
+    float recovery_rate;      // % extracted (0.0 - 1.0)
     
-    float unc_thru, unc_store, unc_cost, unc_op, unc_risk;
+    float utilization_rate;   
+    float effective_cost;     
+    float smelting_margin;    // (Spot * Recovery) - OreCost
+    float gross_profit;       // Annualized
+    float ebitda;             
+    float enterprise_value;   
+    float adjusted_multiple;  
+
+    float unc_thru, unc_inv, unc_op, unc_risk;
     
     long long last_update;
 };
@@ -24,7 +40,9 @@ public:
 protected:
     RefineryState current_state;
     float process_noise;
+    
     void apply_signal(const json& sig);
+    void recalculate_valuation(); 
 };
 
 #endif

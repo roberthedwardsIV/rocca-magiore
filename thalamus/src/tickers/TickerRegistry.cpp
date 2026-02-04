@@ -10,6 +10,14 @@
 std::unordered_map<std::string, std::shared_ptr<BaseTicker>> TickerRegistry::ticker_map;
 std::mutex TickerRegistry::ticker_mtx;
 
+MacroData TickerRegistry::current_macro = {
+    0.045,  // RF rate
+    0.015,  // Corporate spread
+    0.055,  // Equity Risk Premium
+    0
+};
+std::mutex TickerRegistry::macro_mtx;
+
 bool TickerRegistry::initialize_from_db() {
     const std::string conn_str = "dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432";
     try {
@@ -29,11 +37,11 @@ bool TickerRegistry::initialize_from_db() {
             std::shared_ptr<BaseTicker> ticker;
 
             if (type == "stock") {
-                ticker = std::make_shared<StockTicker>(sym, meta.value("company", ""), meta.value("sector", ""));
+                ticker = std::make_shared<StockTicker>(sym, meta.value("company", ""), meta.value("sector", ""), CompanyFinancials{0,0,0});
             } else if (type == "future") {
-                ticker = std::make_shared<FutureTicker>(sym, exch, mult);
+                ticker = std::make_shared<FutureTicker>(sym, exch, mult, meta.value("underlying", ""));
             } else if (type == "option") {
-                ticker = std::make_shared<OptionTicker>(sym, meta.value("underlying", ""), meta.value("strike", 0.0), meta.value("is_call", true));
+                ticker = std::make_shared<OptionTicker>(sym, meta.value("underlying", ""), meta.value("strike", 0.0), meta.value("is_call", true), 0LL);
             } else if (type == "commodity_spot") {
                 ticker = std::make_shared<CommoditySpotTicker>(sym, meta.value("name", ""), meta.value("unit", ""));
             }
@@ -73,4 +81,18 @@ void TickerRegistry::for_each_ticker(std::function<void(std::shared_ptr<BaseTick
     for (auto& [sym, ticker] : ticker_map) {
         func(ticker);
     }
+}
+
+void TickerRegistry::update_macro_data(double rf, double spread, double erp, long long ts) {
+    std::lock_guard<std::mutex> lock(macro_mtx);
+    current_macro.risk_free_rate = rf;
+    current_macro.corporate_spread = spread;
+    current_macro.equity_risk_premium = erp;
+    current_macro.last_update = ts;
+    std::cout << "[TICKER REGISTRY] Macro Updated: RF=" << rf << " Spread=" << spread << std::endl;
+}
+
+MacroData TickerRegistry::get_macro_data() {
+    std::lock_guard<std::mutex> lock(macro_mtx);
+    return current_macro;
 }

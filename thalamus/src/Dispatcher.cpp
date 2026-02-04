@@ -19,9 +19,26 @@
 // Signal router (by "entity_type")
 void Dispatcher::route_signal(const json& sig) {
     std::string type = sig.value("entity_type", "unknown");
+    
+    // FRED MARKET DATA UPDATES
+    if (type == "macro_economic") {
+        double rf = sig["data"].value("risk_free_rate", 0.045);
+        double spread = sig["data"].value("corporate_spread", 0.015);
+        long long ts = sig.value("timestamp", 0LL);
+        
+        MacroData current = TickerRegistry::get_macro_data();
+        double erp = current.equity_risk_premium;
+
+        TickerRegistry::update_macro_data(rf, spread, erp, ts);
+
+        GlobalRegistry::for_each_asset([&sig](std::shared_ptr<BaseAsset> asset) {
+            asset->process_packet(sig);
+        });
+        std::cout << "[DISPATCHER] FRED Rates Updated in TickerRegistry." << std::endl;
+    }
 
     // EVENTS HANDLING
-    if (type == "earthquake") {
+    else if (type == "earthquake") {
         handle_event_signal(sig);
 
     // ASSET HANDLING
@@ -137,7 +154,7 @@ void Dispatcher::handle_ticker_signal(const json& sig) {
 
 
 // Helper function: triggers a Twitter search by posting instructions to the "twitter_recon_tasks" redis channel
-void trigger_twitter_recon(const std::string& id, const std::string& type, float lat, float lon, long long ts) {
+void Dispatcher::trigger_twitter_recon(const std::string& id, const std::string& type, float lat, float lon, long long ts) {
     redisContext* c = redisConnect("corpus_callosum", 6379);
     if (c && !c->err) {
         json task;

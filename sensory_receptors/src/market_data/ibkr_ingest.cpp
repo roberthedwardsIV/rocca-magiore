@@ -1,70 +1,54 @@
-#ifndef EXECUTION_ENGINE_HPP
-#define EXECUTION_ENGINE_HPP
-
 #include "IB/EWrapper.h"
 #include "IB/EClientSocket.h"
-#include "IB/EReaderOSSignal.h" // <--- ADDED
-#include "IB/EReader.h"         // <--- ADDED
+#include "IB/EReader.h"           // <--- WAS MISSING
+#include "IB/EReaderOSSignal.h"   // <--- WAS MISSING
 #include "IB/Contract.h"
 #include "IB/Order.h"
-#include "IB/Decimal.h"         // <--- ADDED
-#include <mutex>
-#include <unordered_map>
-#include <string>
-#include <memory>
+#include "IB/OrderState.h"
+#include "IB/Execution.h"
+#include "IB/ScannerSubscription.h"
+#include "IB/CommissionReport.h"
+#include "IB/CommonDefs.h"
+#include <hiredis/hiredis.h>
+#include <pqxx/pqxx>
 #include <nlohmann/json.hpp>
+#include <iostream>
+#include <thread>
+#include <vector>
+#include <unordered_map>
+#include <chrono>
+#include <set>
 
 using json = nlohmann::json;
 
-struct MarketData {
-    double bid = 0.0;
-    double ask = 0.0;
-    double last = 0.0;
-    long long timestamp = 0;
-};
-
-class ExecutionEngine : public EWrapper {
+// --- STUB CLASS TO SATISFY EWRAPPER INTERFACE ---
+class EWrapperStub : public EWrapper {
 public:
-    ExecutionEngine();
-    ~ExecutionEngine();
-
-    bool connect(const char* host, int port, int clientId);
-    void process_messages();
-    void handle_thalamus_signal(const json& signal);
-
-    // --- IBKR EWrapper Overrides (FIXED SIGNATURES) ---
-    void nextValidId(OrderId orderId) override;
-    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override;
-    
-    // Fixed: Added advancedOrderRejectJson argument
-    void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override;
-    
-    // Fixed: Changed 'double' to 'Decimal' for filled/remaining
-    void orderStatus(OrderId orderId, const std::string& status, Decimal filled, Decimal remaining, 
-                     double avgFillPrice, int permId, int parentId, double lastFillPrice, 
-                     int clientId, const std::string& whyHeld, double mktCapPrice) override;
-
-    // Fixed: Changed 'int' to 'Decimal'
+    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override {}
     void tickSize(TickerId tickerId, TickType field, Decimal size) override {}
-    
-    // Stubs
-    void tickString(TickerId tickerId, TickType field, const std::string& value) override {}
-    void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
-    void tickEFP(TickerId tickerId, TickType tickType, double basisPoints, const std::string& formattedBasisPoints,
-                 double totalDividends, int holdDays, const std::string& futureLastTradeDate, double dividendImpact,
-                 double dividendsToLastTradeDate) override {}
     void tickOptionComputation(TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta, double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}
+    void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
+    void tickString(TickerId tickerId, TickType tickType, const std::string& value) override {}
+    void tickEFP(TickerId tickerId, TickType tickType, double basisPoints, const std::string& formattedBasisPoints, double totalDividends, int holdDays, const std::string& futureLastTradeDate, double dividendImpact, double dividendsToLastTradeDate) override {}
+    void orderStatus(OrderId orderId, const std::string& status, Decimal filled, Decimal remaining, double avgFillPrice, int permId, int parentId, double lastFillPrice, int clientId, const std::string& whyHeld, double mktCapPrice) override {}
+    void openOrder(OrderId orderId, const Contract&, const Order&, const OrderState&) override {}
+    void openOrderEnd() override {}
     void winError(const std::string& str, int lastError) override {}
     void connectionClosed() override {}
     void updateAccountValue(const std::string& key, const std::string& val, const std::string& currency, const std::string& accountName) override {}
     void updatePortfolio(const Contract& contract, Decimal position, double marketPrice, double marketValue, double averageCost, double unrealizedPNL, double realizedPNL, const std::string& accountName) override {}
     void updateAccountTime(const std::string& timeStamp) override {}
     void accountDownloadEnd(const std::string& accountName) override {}
+    void nextValidId(OrderId orderId) override {}
     void contractDetails(int reqId, const ContractDetails& contractDetails) override {}
     void bondContractDetails(int reqId, const ContractDetails& contractDetails) override {}
     void contractDetailsEnd(int reqId) override {}
     void execDetails(int reqId, const Contract& contract, const Execution& execution) override {}
     void execDetailsEnd(int reqId) override {}
+    
+    // FIXED SIGNATURE: Added 4th argument (advancedOrderRejectJson)
+    void error(int id, int errorCode, const std::string& errorString, const std::string& advancedOrderRejectJson) override {}
+    
     void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override {}
     void updateMktDepthL2(TickerId id, int position, const std::string& marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
     void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage, const std::string& originExch) override {}
@@ -132,25 +116,139 @@ public:
     void wshEventData(int reqId, const std::string& dataJson) override {}
     void historicalSchedule(int reqId, const std::string& startDateTime, const std::string& endDateTime, const std::string& timeZone, const std::vector<HistoricalSession>& sessions) override {}
     void userInfo(int reqId, const std::string& whiteBrandingId) override {}
-    void openOrder(OrderId orderId, const Contract&, const Order&, const OrderState&) override {}
-    void openOrderEnd() override {}
-
-private:
-    EReaderOSSignal m_osSignal; // <--- This was missing!
-    std::unique_ptr<EClientSocket> client;
-    std::unique_ptr<EReader> reader; // <--- Added reader
-    
-    OrderId nextOrderId;
-    std::mutex engine_mtx;
-
-    std::unordered_map<std::string, int> symbol_to_tickerid;
-    std::unordered_map<int, std::string> tickerid_to_symbol;
-    std::unordered_map<std::string, MarketData> market_cache;
-    std::unordered_map<std::string, double> active_positions;
-
-    void place_order(const std::string& symbol, const std::string& action, double quantity, double limit_price);
-    double calculate_position_size(double price, double volatility);
-    Contract resolve_contract(const std::string& symbol);
 };
 
-#endif
+class MarketDataFeed : public EWrapperStub {
+public:
+    MarketDataFeed() : client(new EClientSocket(this, &OSSignal)), reader(client.get(), &OSSignal) {
+        redis_ctx = redisConnect("corpus_callosum", 6379);
+        if (!redis_ctx || redis_ctx->err) {
+            std::cerr << "[MARKET FEED] Redis Connection Error: " << (redis_ctx ? redis_ctx->errstr : "Alloc failure") << std::endl;
+        }
+    }
+
+    ~MarketDataFeed() {
+        if (redis_ctx) redisFree(redis_ctx);
+    }
+
+    void connect() {
+        if (client->eConnect("ibkr_gateway", 4001, 100)) {
+            std::cout << "[MARKET FEED] Connected to IBKR Gateway." << std::endl;
+            std::thread([this]() {
+                while (client->isConnected()) {
+                    OSSignal.waitForSignal();
+                    reader.processMsgs();
+                }
+            }).detach();
+            load_targets_and_subscribe();
+        } else {
+            std::cerr << "[MARKET FEED] IBKR Connection Failed. Is the Gateway running?" << std::endl;
+        }
+    }
+
+    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override {
+        if (field == 4 || field == 1 || field == 2) { 
+            std::string symbol = id_map[tickerId];
+            json j;
+            j["entity_type"] = "ticker_update";
+            j["symbol"] = symbol;
+            if (field == 4) j["price"] = price;
+            if (field == 1) j["bid"] = price;
+            if (field == 2) j["ask"] = price;
+            j["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            if (redis_ctx) {
+                std::string payload = j.dump();
+                redisCommand(redis_ctx, "LPUSH raw_signals %s", payload.c_str());
+            }
+        }
+    }
+    
+    void tickGeneric(TickerId tickerId, TickType tickType, double value) override {
+        if (tickType == 24) { 
+             std::string symbol = id_map[tickerId];
+             json j;
+             j["entity_type"] = "ticker_update";
+             j["symbol"] = symbol;
+             j["volatility"] = value;
+             j["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+             if (redis_ctx) {
+                 std::string payload = j.dump();
+                 redisCommand(redis_ctx, "LPUSH raw_signals %s", payload.c_str());
+             }
+        }
+    }
+
+    void tickOptionComputation(TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta, double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {
+        if (tickType == 13) {
+            std::string symbol = id_map[tickerId];
+            json j;
+            j["entity_type"] = "ticker_update";
+            j["symbol"] = symbol;
+            if (impliedVol > 0) j["iv"] = impliedVol;
+            if (delta > -2) j["delta"] = delta;
+            if (gamma > -2) j["gamma"] = gamma;
+            if (theta > -2) j["theta"] = theta;
+            j["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            if (redis_ctx) {
+                std::string payload = j.dump();
+                redisCommand(redis_ctx, "LPUSH raw_signals %s", payload.c_str());
+            }
+        }
+    }
+
+    // FIXED OVERRIDE: Matches the 4-argument signature from EWrapper.h
+    void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override {
+    // Note the 4th argument above ^
+    if (errorCode == 2104 || errorCode == 2106) return;
+    std::cerr << "[IBKR ERROR] Id: " << id << " Code: " << errorCode << " Msg: " << errorMsg << std::endl;
+}
+    
+private:
+    std::unique_ptr<EClientSocket> client;
+    EReaderOSSignal OSSignal;
+    EReader reader; 
+    redisContext* redis_ctx;
+    std::unordered_map<int, std::string> id_map;
+
+    void load_targets_and_subscribe() {
+        try {
+            pqxx::connection C("dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432");
+            pqxx::work W(C);
+            pqxx::result R = W.exec("SELECT symbol, instrument_type, exchange, metadata FROM ticker_registry WHERE active = TRUE");
+            int reqId = 1000;
+            std::cout << "[MARKET FEED] Loading " << R.size() << " targets from DB..." << std::endl;
+            for (auto row : R) {
+                Contract c;
+                c.symbol = row["symbol"].as<std::string>();
+                c.exchange = row["exchange"].as<std::string>();
+                c.currency = "USD";
+                std::string type = row["instrument_type"].as<std::string>();
+                if (type == "future") {
+                    c.secType = "FUT";
+                    c.lastTradeDateOrContractMonth = "202612";
+                } else if (type == "option") {
+                    c.secType = "OPT";
+                } else {
+                    c.secType = "STK";
+                    c.exchange = "SMART"; 
+                    c.primaryExchange = row["exchange"].as<std::string>();
+                }
+                client->reqMktData(reqId, c, "100,101,106", false, false, TagValueListSPtr());
+                id_map[reqId] = c.symbol;
+                std::cout << "   -> Subscribed: " << c.symbol << " (" << type << ")" << std::endl;
+                reqId++;
+            }
+        } catch (const std::exception &e) {
+            std::cerr << "[DB ERROR] Failed to load targets: " << e.what() << std::endl;
+        }
+    }
+};
+
+int main() {
+    MarketDataFeed feed;
+    feed.connect();
+    while(true) {
+        std::this_thread::sleep_for(std::chrono::seconds(60));
+    }
+    return 0;
+}
