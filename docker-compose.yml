@@ -48,7 +48,10 @@ services:
 
 # ------------------- Thalamus (C++ State & Fusion Relay) -------------------
   thalamus:
-    build: ./thalamus         
+    build: ./thalamus
+    volumes:
+      - ./thalamus:/app
+      - ./common:/app/common         
     container_name: thalamus
     environment:
       - DB_HOST=hippocampus
@@ -66,6 +69,9 @@ services:
 # ------------------ Brainstem (C++ Execution Engine) ------------------
   brainstem:
     build: ./brainstem
+    volumes:
+      - ./brainstem:/app
+      - ./common:/app/common
     container_name: brainstem
     environment:
       - REDIS_HOST=corpus_callosum

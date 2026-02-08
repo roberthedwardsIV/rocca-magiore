@@ -3,15 +3,17 @@
 
 #include "IB/EWrapper.h"
 #include "IB/EClientSocket.h"
-#include "IB/EReaderOSSignal.h" // <--- ADDED
-#include "IB/EReader.h"         // <--- ADDED
+#include "IB/EReaderOSSignal.h"
+#include "IB/EReader.h"
 #include "IB/Contract.h"
 #include "IB/Order.h"
-#include "IB/Decimal.h"         // <--- ADDED
+#include "IB/Decimal.h"
+#include "managers/RiskManager.hpp" // <--- ADDED: Risk Integration
 #include <mutex>
 #include <unordered_map>
 #include <string>
 #include <memory>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -32,22 +34,32 @@ public:
     void process_messages();
     void handle_thalamus_signal(const json& signal);
 
-    // --- IBKR EWrapper Overrides (FIXED SIGNATURES) ---
+    // --- LOGIC SWITCH ---
+    bool paper_mode = true; 
+
+    // --- EXECUTION HELPERS ---
+    // Helper to create the Bracket (Parent + Stop + Target) bundle
+    std::vector<Order> bracket_order(int parentId, const std::string& action, double qty, double limit_price, double stop_price, double take_profit);
+    
+    // Core Execution Router (UPDATED SIGNATURE for Bracket Support)
+    void place_order(const std::string& symbol, const std::string& action, double quantity, double limit_price, double stop_price, double take_profit);
+
+    // --- IBKR EWrapper Overrides ---
     void nextValidId(OrderId orderId) override;
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override;
     
-    // Fixed: Added advancedOrderRejectJson argument
+    // Error handling
     void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override;
     
-    // Fixed: Changed 'double' to 'Decimal' for filled/remaining
+    // Order status
     void orderStatus(OrderId orderId, const std::string& status, Decimal filled, Decimal remaining, 
                      double avgFillPrice, int permId, int parentId, double lastFillPrice, 
                      int clientId, const std::string& whyHeld, double mktCapPrice) override;
 
-    // Fixed: Changed 'int' to 'Decimal'
+    // Tick Size
     void tickSize(TickerId tickerId, TickType field, Decimal size) override {}
     
-    // Stubs
+    // --- STUBS (Required for EWrapper abstract base class) ---
     void tickString(TickerId tickerId, TickType field, const std::string& value) override {}
     void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
     void tickEFP(TickerId tickerId, TickType tickType, double basisPoints, const std::string& formattedBasisPoints,
@@ -136,21 +148,26 @@ public:
     void openOrderEnd() override {}
 
 private:
-    EReaderOSSignal m_osSignal; // <--- This was missing!
+    EReaderOSSignal m_osSignal;
     std::unique_ptr<EClientSocket> client;
-    std::unique_ptr<EReader> reader; // <--- Added reader
+    std::unique_ptr<EReader> reader;
     
     OrderId nextOrderId;
     std::mutex engine_mtx;
 
+    // --- INTERNAL STATE ---
     std::unordered_map<std::string, int> symbol_to_tickerid;
     std::unordered_map<int, std::string> tickerid_to_symbol;
     std::unordered_map<std::string, MarketData> market_cache;
     std::unordered_map<std::string, double> active_positions;
 
-    void place_order(const std::string& symbol, const std::string& action, double quantity, double limit_price);
+    // --- SUB-COMPONENTS ---
+    RiskManager risk_manager; // <--- The Gatekeeper
+
+    // --- HELPERS ---
     double calculate_position_size(double price, double volatility);
     Contract resolve_contract(const std::string& symbol);
+    std::string get_sector(const std::string& symbol); // <--- Sector Helper
 };
 
 #endif

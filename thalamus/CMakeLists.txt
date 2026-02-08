@@ -16,6 +16,8 @@ include_directories(
     /usr/include/postgresql
 )
 
+include_directories(${CMAKE_SOURCE_DIR}/common/include)
+
 add_executable(thalamus_engine 
     src/main.cpp 
     src/GlobalRegistry.cpp

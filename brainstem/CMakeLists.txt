@@ -16,11 +16,14 @@ include_directories(
     /usr/include             # For IB headers (in IB/ folder)
 )
 
+include_directories(${CMAKE_SOURCE_DIR}/common/include)
+
 add_executable(brainstem_engine 
     src/main.cpp 
     src/ExecutionEngine.cpp 
     src/utils/ContractResolver.cpp
-    src/utils/TradeLogger.cpp  # Added this source file which was missing in your list
+    src/managers/RiskManager.cpp  
+    src/utils/TradeLogger.cpp  
 )
 
 target_link_libraries(brainstem_engine 

@@ -1,7 +1,7 @@
 #include "IB/EWrapper.h"
 #include "IB/EClientSocket.h"
-#include "IB/EReader.h"           // <--- WAS MISSING
-#include "IB/EReaderOSSignal.h"   // <--- WAS MISSING
+#include "IB/EReader.h"           
+#include "IB/EReaderOSSignal.h"   
 #include "IB/Contract.h"
 #include "IB/Order.h"
 #include "IB/OrderState.h"
@@ -21,7 +21,7 @@
 
 using json = nlohmann::json;
 
-// --- STUB CLASS TO SATISFY EWRAPPER INTERFACE ---
+// --- STUB CLASS FOR EWRAPPER INTERFACE ---
 class EWrapperStub : public EWrapper {
 public:
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override {}
@@ -45,10 +45,7 @@ public:
     void contractDetailsEnd(int reqId) override {}
     void execDetails(int reqId, const Contract& contract, const Execution& execution) override {}
     void execDetailsEnd(int reqId) override {}
-    
-    // FIXED SIGNATURE: Added 4th argument (advancedOrderRejectJson)
     void error(int id, int errorCode, const std::string& errorString, const std::string& advancedOrderRejectJson) override {}
-    
     void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override {}
     void updateMktDepthL2(TickerId id, int position, const std::string& marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
     void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage, const std::string& originExch) override {}
@@ -123,7 +120,7 @@ public:
     MarketDataFeed() : client(new EClientSocket(this, &OSSignal)), reader(client.get(), &OSSignal) {
         redis_ctx = redisConnect("corpus_callosum", 6379);
         if (!redis_ctx || redis_ctx->err) {
-            std::cerr << "[MARKET FEED] Redis Connection Error: " << (redis_ctx ? redis_ctx->errstr : "Alloc failure") << std::endl;
+            std::cerr << "[IKBR MARKET FEED] Redis Connection Error: " << (redis_ctx ? redis_ctx->errstr : "Alloc failure") << std::endl;
         }
     }
 
@@ -132,15 +129,34 @@ public:
     }
 
     void connect() {
-        if (client->eConnect("ibkr_gateway", 4001, 100)) {
+        //    Port 4001 is standard for Gateway; use 7496 if using TWS Live, 7497 for TWS Paper
+        if (client->eConnect("192.168.1.164", 4001, 100)) {
             std::cout << "[MARKET FEED] Connected to IBKR Gateway." << std::endl;
+
+            // --- CONFIGURATION FOR MIXED DATA PERMISSIONS ---
+            // Type 1 = Live Streaming (Requires full subscriptions)
+            // Type 3 = Delayed (15-20 min lag, usually free)
+            // Type 4 = Delayed-Frozen (Best for testing; gives delayed live + static close data)
+            // CURRENT SETTING: Type 3 (Delayed)
+
+            client->reqMarketDataType(3); 
+            std::cout << "[MARKET FEED] Data Mode: DELAYED (Type 3) - Ensuring Futures Data Flow." << std::endl;
+            
+            // FUTURE UPGRADE: 
+            // client->reqMarketDataType(1); 
+            // ------------------------------------------------
+
             std::thread([this]() {
                 while (client->isConnected()) {
                     OSSignal.waitForSignal();
                     reader.processMsgs();
                 }
             }).detach();
+            
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            
             load_targets_and_subscribe();
+
         } else {
             std::cerr << "[MARKET FEED] IBKR Connection Failed. Is the Gateway running?" << std::endl;
         }
@@ -196,9 +212,7 @@ public:
         }
     }
 
-    // FIXED OVERRIDE: Matches the 4-argument signature from EWrapper.h
     void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override {
-    // Note the 4th argument above ^
     if (errorCode == 2104 || errorCode == 2106) return;
     std::cerr << "[IBKR ERROR] Id: " << id << " Code: " << errorCode << " Msg: " << errorMsg << std::endl;
 }
@@ -216,7 +230,7 @@ private:
             pqxx::work W(C);
             pqxx::result R = W.exec("SELECT symbol, instrument_type, exchange, metadata FROM ticker_registry WHERE active = TRUE");
             int reqId = 1000;
-            std::cout << "[MARKET FEED] Loading " << R.size() << " targets from DB..." << std::endl;
+            std::cout << "[IKBR MARKET FEED] Loading " << R.size() << " targets from DB..." << std::endl;
             for (auto row : R) {
                 Contract c;
                 c.symbol = row["symbol"].as<std::string>();

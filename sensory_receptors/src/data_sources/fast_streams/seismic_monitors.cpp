@@ -120,10 +120,10 @@ void send_to_brain(const std::string& key, const std::deque<float>& samples) {
         
         std::vector<float> data(samples.begin(), samples.end());
         send(sock, data.data(), data.size() * sizeof(float), 0);
-    } else {
-        fprintf(stderr, "\n[SEISMIC](SOCKET ERROR) %s: %s\n", key.c_str(), strerror(errno));
-        fflush(stderr);
-    }
+    } //else {
+        //fprintf(stderr, "\n[SEISMIC](SOCKET ERROR) %s: %s\n", key.c_str(), strerror(errno));
+        //fflush(stderr);
+    //}
     close(sock);
 }
 
