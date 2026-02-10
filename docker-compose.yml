@@ -14,6 +14,7 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASS=${DB_PASS}
       - REDIS_HOST=corpus_callosum
+      - NASA_FIRMS_KEY=REMOVED
     depends_on:
       - hippocampus
       - corpus_callosum

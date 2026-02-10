@@ -46,6 +46,32 @@ target_link_libraries(aviation_ingest
     m
 )
 
+# --- MARITIME AIS INGEST ---
+add_executable(ais_ingest src/data_sources/fast_streams/ais_ingest.cpp)
+target_link_libraries(ais_ingest 
+    ${HIREDIS_LIBRARIES} 
+    websockets
+    ssl
+    crypto
+    pthread
+)
+
+# --- WILDFIRE INGEST ---
+add_executable(fire_ingest src/data_sources/slow_streams/fire_ingest.cpp)
+target_link_libraries(fire_ingest 
+    ${HIREDIS_LIBRARIES} 
+    curl 
+    pthread
+)
+# --- FILINGS INGEST ---
+add_executable(filings_ingest src/data_sources/slow_streams/filings_ingest.cpp)
+target_link_libraries(filings_ingest 
+    ${PQXX_LIBRARIES} 
+    ${HIREDIS_LIBRARIES} 
+    curl 
+    pthread
+)
+
 # --- MARKET DATA STREAMS (IBKR) ---
 add_executable(ibkr_ingest src/market_data/ibkr_ingest.cpp)
 target_link_libraries(ibkr_ingest

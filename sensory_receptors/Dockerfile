@@ -2,7 +2,7 @@ FROM gcc:12
 
 # 1. Install all system dependencies
 RUN apt-get update && apt-get install -y \
-    cmake libpq-dev libpqxx-dev libhiredis-dev libmseed-dev \
+    cmake libpq-dev libpqxx-dev libhiredis-dev libmseed-dev libwebsockets-dev \
     libcurl4-openssl-dev nlohmann-json3-dev libboost-system-dev \
     python3 python3-pip ffmpeg nodejs locales git coreutils curl \
     pkg-config libavcodec-dev libavformat-dev libavutil-dev \
@@ -108,8 +108,11 @@ RUN rm -rf build && mkdir build && cd build && \
 RUN echo "#!/bin/bash\n\
 ./build/seismic_engine &\n\
 ./build/aviation_ingest &\n\
+./build/ais_ingest &\n\
+./build/fire_ingest &\n\
 ./build/ibkr_ingest &\n\
 ./build/fred_macro &\n\
+./build/filings_ingest &\n\
 ./build/src/data_sources/med_streams/radio_supervisor &\n\
 ./build/twitter_recon" > start.sh
 

@@ -3,6 +3,7 @@ FROM python:3.10.18-slim
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     build-essential \
+    glpk-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,7 +26,11 @@ python3 src/data_analysis/seismic_brain.py &\n\
 python3 src/data_analysis/radio_news_brain.py &\n\
 python3 src/data_analysis/aviation_brain.py &\n\
 python3 src/utils/aviation_baselines.py &\n\
-python3 src/data_analysis/twitter_recon_brain.py" > /start_brains.sh
+python3 src/data_analysis/twitter_recon_brain.py &\n\
+python3 src/trainers/asset_network_solver.py &\n\
+python3 src/trainers/maritime_trainer.py &\n\
+python3 src/data_analysis/maritime_brain.py &\n\
+python3 src/data_analysis/financial_parser.py" > /start_brains.sh
 
 RUN chmod +x /start_brains.sh
 

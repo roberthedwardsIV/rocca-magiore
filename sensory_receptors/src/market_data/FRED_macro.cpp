@@ -11,7 +11,7 @@
 using json = nlohmann::json;
 
 // --- CONFIGURATION ---
-const std::string FRED_API_KEY = std::getenv("FRED_API_KEY") ? std::getenv("FRED_API_KEY") : "YOUR_API_KEY_HERE";
+const std::string FRED_API_KEY = std::getenv("FRED_API_KEY") ? std::getenv("FRED_API_KEY") : "REMOVED";
 const std::string REDIS_HOST = "corpus_callosum";
 const int REDIS_PORT = 6379;
 

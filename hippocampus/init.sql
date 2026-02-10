@@ -217,6 +217,32 @@ CREATE TABLE spatial_ref.world_cities (
 CREATE INDEX idx_world_cities_coords ON spatial_ref.world_cities USING GIST (coords);
 CREATE INDEX idx_world_cities_pop ON spatial_ref.world_cities (population);
 
+-- Maritime Vessel Watchlist
+CREATE TABLE IF NOT EXISTS maritime_vessel_profiles (
+    mmsi BIGINT PRIMARY KEY,
+    vessel_name TEXT,
+    vessel_type INT, 
+    category TEXT DEFAULT 'Unknown', 
+    is_watchlist BOOLEAN DEFAULT FALSE,
+    confidence_score FLOAT DEFAULT 0.0,
+    last_updated TIMESTAMP DEFAULT NOW()
+);
+
+-- Historical log for the Maritime Trainer to learn from
+CREATE TABLE IF NOT EXISTS maritime_voyage_logs (
+    id SERIAL PRIMARY KEY,
+    mmsi BIGINT,
+    lat FLOAT,
+    lon FLOAT,
+    speed FLOAT,
+    heading FLOAT,
+    nav_status INT, 
+    draft FLOAT,    
+    timestamp TIMESTAMP
+);
+
+CREATE INDEX idx_maritime_mmsi_ts ON maritime_voyage_logs (mmsi, timestamp);
+
 --------------------------------------------------------------------------------
 -- HELPER FUNCTIONS
 --------------------------------------------------------------------------------
