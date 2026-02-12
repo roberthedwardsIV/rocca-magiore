@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev nlohmann-json3-dev libboost-system-dev \
     python3 python3-pip ffmpeg nodejs locales git coreutils curl \
     pkg-config libavcodec-dev libavformat-dev libavutil-dev \
+    libosmium2-dev libprotozero-dev zlib1g-dev libbz2-dev \
     libswresample-dev libopenblas-dev wget unzip \
     libprotobuf-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*

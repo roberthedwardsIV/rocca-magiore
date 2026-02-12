@@ -243,6 +243,89 @@ CREATE TABLE IF NOT EXISTS maritime_voyage_logs (
 
 CREATE INDEX idx_maritime_mmsi_ts ON maritime_voyage_logs (mmsi, timestamp);
 
+DO \$\$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'asset_type') THEN
+        CREATE TYPE asset_type AS ENUM ('mine', 'refinery');
+    END IF;
+END
+\$\$;
+
+ALTER TYPE asset_type ADD VALUE IF NOT EXISTS 'smelter';
+ALTER TYPE asset_type ADD VALUE IF NOT EXISTS 'hub';
+ALTER TYPE asset_type ADD VALUE IF NOT EXISTS 'choke_point';
+
+CREATE TABLE IF NOT EXISTS assets (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    commodity_types TEXT[], -- e.g. ['Copper_Ore', 'Gold']
+    latitude FLOAT,
+    longitude FLOAT,
+    geom GEOMETRY(Geometry, 4326),
+    source TEXT,
+    last_update BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_assets_geom ON assets USING GIST (geom);
+
+CREATE TABLE IF NOT EXISTS supply_lines (
+    line_id SERIAL PRIMARY KEY,
+    name TEXT,
+    type TEXT, -- 'rail_route', 'highway', 'shipping_lane'
+    geom GEOMETRY(Geometry, 4326),
+    state_data JSONB, -- Flexible storage for speed/capacity/etc
+    last_update BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_supply_lines_geom ON supply_lines USING GIST (geom);
+
+-- Supply Hubs
+CREATE TABLE IF NOT EXISTS supply_hubs (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL, -- 'rail_yard', 'port', 'airport'
+    geom GEOMETRY(Geometry, 4326),
+    capacity_rating FLOAT DEFAULT 1.0,
+    status TEXT DEFAULT 'ACTIVE',
+    last_updated TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_hubs_geom ON supply_hubs USING GIST (geom);
+
+-- Supply Chokepoints
+CREATE TABLE IF NOT EXISTS supply_chokepoints (
+    id SERIAL PRIMARY KEY,
+    name TEXT,
+    type TEXT NOT NULL, -- 'bridge', 'border', 'tunnel', 'lock'
+    geom GEOMETRY(Geometry, 4326),
+    max_weight_tons FLOAT,
+    max_height_meters FLOAT,
+    structural_health FLOAT DEFAULT 1.0,
+    political_status FLOAT DEFAULT 1.0,
+    last_updated TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_chokepoints_geom ON supply_chokepoints USING GIST (geom);
+
+-- Topology Link 
+CREATE TABLE IF NOT EXISTS route_dependencies (
+    route_id INT REFERENCES supply_lines(line_id) ON DELETE CASCADE,
+    chokepoint_id INT REFERENCES supply_chokepoints(id) ON DELETE CASCADE,
+    impact_factor FLOAT DEFAULT 1.0,
+    distance_from_origin_km FLOAT,
+    PRIMARY KEY (route_id, chokepoint_id)
+);
+
+-- Smelter Specifics
+CREATE TABLE IF NOT EXISTS smelter_specs (
+    asset_id INT REFERENCES assets(id) ON DELETE CASCADE,
+    furnace_type TEXT,
+    primary_product TEXT,
+    so2_capture_rate FLOAT DEFAULT 0.95,
+    energy_source TEXT
+);
+
+-- Connectivity to Supply Lines
+ALTER TABLE supply_lines 
+ADD COLUMN IF NOT EXISTS origin_hub_id INT REFERENCES supply_hubs(id),
+ADD COLUMN IF NOT EXISTS destination_hub_id INT REFERENCES supply_hubs(id);
+
 --------------------------------------------------------------------------------
 -- HELPER FUNCTIONS
 --------------------------------------------------------------------------------

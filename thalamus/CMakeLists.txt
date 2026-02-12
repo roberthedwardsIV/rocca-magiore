@@ -28,6 +28,7 @@ add_executable(thalamus_engine
     
     # Events
     src/events/EarthquakeTracker.cpp
+    src/events/WildfireTracker.cpp  
     
     # Assets
     src/assets/MineAsset.cpp

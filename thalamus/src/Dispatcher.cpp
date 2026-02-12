@@ -9,6 +9,7 @@
 #include "GlobalRegistry.hpp"
 #include "DatabaseManager.hpp"
 #include "events/EarthquakeTracker.hpp"
+#include "events/WildfireTracker.hpp"
 #include "tickers/TickerRegistry.hpp"
 #include "Propagator.hpp"
 
@@ -38,11 +39,11 @@ void Dispatcher::route_signal(const json& sig) {
     }
 
     // EVENTS HANDLING
-    else if (type == "earthquake") {
+    else if (type == "earthquake" || type == "wildfire") {
         handle_event_signal(sig);
 
     // ASSET HANDLING
-    } else if (type == "mine" || type == "refinery") {
+    else if (type == "mine" || type == "refinery") {
         handle_asset_signal(sig);
 
     // SUPPLY LINE HANDLING
@@ -106,8 +107,15 @@ void Dispatcher::handle_event_signal(const json& sig) {
         //CALLS TWITTER RECON TO VERIFY EARTHQUAKE SIGNAL
         trigger_twitter_recon(id, "earthquake", lat, lon, timestamp);
 
-    } // else if {other event signal types to be added here once built}
-
+    } else if (!target && sig.value("entity_type", "") == "wildfire") {
+        std::cout << "[DISPATCHER] Spawning new WildfireTracker: " << id << std::endl;
+        target = std::make_shared<WildfireTracker>(sig);
+        GlobalRegistry::register_event(id, target);
+        
+        // Optional: Trigger Twitter Recon to see if people are talking about the fire
+        trigger_twitter_recon(id, "wildfire", lat, lon, timestamp);
+    }
+    
     if (target) {
         target->process_packet(sig);
         Propagator::propagate_event_impact(id);
