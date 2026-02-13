@@ -5,30 +5,36 @@
 
 class RailRoute : public BaseRoute {
 public:
-    // --- PHYSICAL CONSTRAINTS (The "Hard" Limits) ---
-    float gauge_mm;            // 1435 (Standard), 1520 (Russian), 1668 (Iberian), 1000 (Meter)
-    bool is_electrified;       // If false, electric locos cannot pass (0 capacity for them)
-    float voltage_kv;          // 25.0, 15.0, 3.0 DC (Incompatible voltages require loco change)
-    float max_axle_load_tons;  // 22.5t is standard EU. 30t+ for heavy haul (US/Aus).
-    float loading_gauge_height;// Max height of cargo (e.g., double-stack containers)
+    // Static
+    float gauge_mm;                     // Distance between two rails (mm)
+    bool is_electrified;                // Electrification
+    float voltage_kv;                   // Track Voltage (kV - DC) 
+    float max_axle_load_tons;           // Weight Limit (tons)
+    float loading_gauge_height;         // Height Limit (m)
+    float design_speed_kmh;             // Base Speed Limit (kmh)
+    float overturning_wind_speed_kmh;   // Wind Speed Limit (kmh)
 
-    // --- CAPACITY METRICS ---
-    int number_of_tracks;      // 1 (Single) vs 2 (Double) vs 4 (Quad)
-    float max_speed_kmh;       // Line speed limit
-    float signaling_headway_min; // Minimum time between trains (e.g., 3 mins vs 15 mins)
+    // Dynamic
+    int number_of_tracks;               // Track Number
+    float signaling_headway_min;        // Headway Time Needed (min)
+    float track_integrity;              // Track Health (0-1)
+    bool power_active;                  // Catenary Status
     
-    // --- DYNAMIC STATE ---
-    float current_flow_trains_per_hour;
-    bool is_main_line;         // "usage=main" vs "usage=branch/industrial"
+    // Calculated
+    float current_flow_trains_per_hour; // Current Capacity
+    float effective_max_speed_kmh;      // True Speed Limit
+    float travel_time_hours;            // Time of Travel (hours)
 
-    // Constructor
     RailRoute(long long id, std::string name);
 
-    // Parses "gauge", "voltage", "frequency", "tracks", "usage"
-    void parse_osm_tags();
+    void parse_osm_tags();     
+    void update_metrics();     
+    
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
 
-    // Updates max capacity based on signaling and track count
-    void update_metrics();
+    private:
+        float calculate_congestion_delay(float volume, float capacity) const;
 };
 
 #endif

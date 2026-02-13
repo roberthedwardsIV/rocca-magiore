@@ -5,37 +5,38 @@
 
 class MaritimeRoute : public BaseRoute {
 public:
-    // --- PHYSICAL CONSTRAINTS ---
-    float max_draft_meters;       // The "Depth Limit" (e.g., 20m Malacca Strait)
-    bool requires_ice_breaker;    // Northern Sea Route / Arctic
-    float distance_nautical_miles;// Length in NM (1 NM = 1.852 km)
+    // Static
+    float max_draft_meters;        // Depth Limit (m)
+    bool requires_ice_breaker;     // Flag for iced routes
+    float distance_nautical_miles; // Length in NM (1 NM = 1.852 km)
+    float design_speed_knots;      // Theoretical speed of vessel class
+    std::string zone_type;         // "eez", "international", "contiguous"
+    std::string seamark_type;      // "fairway", "separation_lane"
 
-    // --- DYNAMIC CONDITIONS ---
-    float sea_state_level;        // Douglas Scale: 0 (Glass) -> 9 (Phenomenal)
-    float wind_speed_knots;       // Headwinds slow vessels down massively
+    // Dynamic
+    float sea_state_level;         // Douglas Scale (0-9)
+    float wave_height_meters;      // Swell/wind wave height (m)
+    float wind_component_knots;    // Wind speed (+/- knots)
+    float ice_coverage_pct;        // Coverage of ice (%)
     
-    // --- SECURITY & RISK ---
-    // 0=Safe, 1=Low, 2=Elevated, 3=High, 4=Severe, 5=Critical (No-Go)
-    int threat_level;             
-    std::string threat_type;      // "piracy", "war_zone", "naval_blockade", "missile_range"
-    float insurance_premium_mult; // War Risk Surcharge (e.g., 10x cost)
+    // Security + Risk
+    int threat_level;              // Defcom level (0-5)
+    std::string threat_type;       // Threat type (string)
+    float insurance_premium_mult;  // War Risk Surcharge
 
-    // --- OPERATIONAL METRICS ---
-    float effective_speed_knots;  // Real speed after weather/threat penalties
-    float travel_time_hours;      // Latency
-
-    // --- OSM ATTRIBUTES ---
-    std::string zone_type;        // "eez", "international", "contiguous"
-    std::string seamark_type;     // "fairway", "separation_lane"
+    // Calculated
+    float effective_speed_knots;   // Current Speed-Over-Ground (knots)
+    float travel_time_hours;       // Latency (Distance / SOG)
+    float fuel_efficiency_multiplier; // Fuel burn penalty factor
 
     // Constructor
     MaritimeRoute(long long id, std::string name);
 
-    // Parses "seamark:type", "depth", "width"
-    void parse_osm_tags();
-
-    // Calculates effective speed based on Sea State + Evasive Maneuvers (Threats)
-    void update_metrics();
+    void parse_osm_tags();     
+    void update_metrics();     
+    
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
 };
 
 #endif

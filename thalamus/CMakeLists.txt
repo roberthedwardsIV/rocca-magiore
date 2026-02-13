@@ -10,13 +10,15 @@ include_directories(
     src 
     src/events
     src/assets 
-    src/supply_lines 
-    src/finance    # Added
-    src/tickers    # Added
+    src/routes      
+    src/hubs        
+    src/chokepoints 
+    src/finance    
+    src/tickers    
     /usr/include/postgresql
 )
 
-include_directories(${CMAKE_SOURCE_DIR}/common/include)
+include_directories(${CMAKE_SOURCE_DIR}/../common/include)
 
 add_executable(thalamus_engine 
     src/main.cpp 
@@ -26,28 +28,38 @@ add_executable(thalamus_engine
     src/Archiver.cpp
     src/DatabaseManager.cpp
     
-    # Events
     src/events/EarthquakeTracker.cpp
     src/events/WildfireTracker.cpp  
     
-    # Assets
     src/assets/MineAsset.cpp
     src/assets/RefineryAsset.cpp
+    src/assets/SmelterAsset.cpp  
     
-    # Supply Lines
-    src/supply_lines/RailLine.cpp
-    src/supply_lines/RailYard.cpp
-    src/supply_lines/MaritimeRoute.cpp
-    src/supply_lines/MaritimePort.cpp
-    src/supply_lines/PipelineLine.cpp
-    src/supply_lines/PipelineStation.cpp
-    src/supply_lines/Highway.cpp
-    src/supply_lines/Airport.cpp
-    src/supply_lines/Airspace.cpp
-    src/supply_lines/CanalRoute.cpp
-    src/supply_lines/CanalLock.cpp
+    src/routes/RoadRoute.cpp
+    src/routes/RailRoute.cpp
+    src/routes/MaritimeRoute.cpp
+    src/routes/AirRoute.cpp
+    src/routes/PipelineRoute.cpp
+    src/routes/PowerTransmissionRoute.cpp
+    src/routes/WaterwayRoute.cpp
 
-    # Finance & Tickers (CRITICAL MISSING FILES)
+    src/hubs/PortHub.cpp
+    src/hubs/AirportHub.cpp
+    src/hubs/RailNodeHub.cpp
+    src/hubs/DistributionHub.cpp
+    src/hubs/PowerSubstationHub.cpp
+    src/hubs/PowerPlantHub.cpp
+
+    src/chokepoints/BridgeChokePoint.cpp
+    src/chokepoints/TunnelChokePoint.cpp
+    src/chokepoints/BorderChokePoint.cpp
+    src/chokepoints/CanalLockChokePoint.cpp
+    src/chokepoints/DamChokePoint.cpp
+    src/chokepoints/RunwayChokePoint.cpp
+    src/chokepoints/PowerSubstationChokePoint.cpp
+    src/chokepoints/PortCraneChokePoint.cpp
+    src/chokepoints/PumpingStationChokePoint.cpp
+
     src/finance/SignalEngine.cpp
     src/tickers/TickerRegistry.cpp
     src/tickers/StockTicker.cpp

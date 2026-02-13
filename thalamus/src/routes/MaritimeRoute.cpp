@@ -3,73 +3,63 @@
 #include <algorithm>
 #include <cmath>
 
+// Constructor for initialization
 MaritimeRoute::MaritimeRoute(long long id, std::string name)
     : BaseRoute(id, name, "maritime") {
     
-    // Default Physical Constraints (Deep Ocean)
-    max_draft_meters = 25.0f;     // Deep enough for VLCC/Capesize
+    // Default values
+    max_draft_meters = 25.0f;      
     requires_ice_breaker = false;
     distance_nautical_miles = 0.0f;
-
-    // Default Dynamic Conditions (Calm Seas)
-    sea_state_level = 2.0f;       // Smooth (Wave height 0.1-0.5m)
-    wind_speed_knots = 10.0f;     // Gentle Breeze
-    
-    // Default Security (Safe)
-    threat_level = 0;             // 0=Safe
+    design_speed_knots = 18.0f;    
+    zone_type = "international"; 
+    seamark_type = "fairway"; 
+    sea_state_level = 2.0f;        
+    wave_height_meters = 0.5f;     
+    wind_component_knots = 0.0f;
+    ice_coverage_pct = 0.0f;
+    threat_level = 0; 
     threat_type = "none";
     insurance_premium_mult = 1.0f;
-
-    // Default Operational Metrics
-    effective_speed_knots = 18.0f;// Standard Container Ship Eco-Speed
-    travel_time_hours = 0.0f;
-    
-    zone_type = "international";
-    seamark_type = "fairway";
+    effective_speed_knots = design_speed_knots;
+    travel_time_hours = 0.0f; 
+    fuel_efficiency_multiplier = 1.0f;
 }
 
+
+// Direct updates to static fields from OSM tags
 void MaritimeRoute::parse_osm_tags() {
-    // 1. Seamark Type (Route Definition)
+    // Seamark Type
     if (tags.count("seamark:type")) {
         seamark_type = tags["seamark:type"];
     }
 
-    // 2. Zone Type (Jurisdiction)
+    // Zone Type (Jurisdiction)
     if (tags.count("maritime")) {
-        // e.g., maritime=yes, maritime=fairway
         zone_type = tags["maritime"];
     }
 
-    // 3. Draft Limits (Depth)
-    // OSM often uses "depth" or "seamark:fixme:depth"
+    // Draft Limits (max_draft)
     if (tags.count("depth")) {
-        try {
-            max_draft_meters = std::stof(tags["depth"]);
-        } catch (...) { max_draft_meters = 25.0f; }
+        try { max_draft_meters = std::stof(tags["depth"]); } catch (...) { max_draft_meters = 25.0f;} 
     }
     else if (tags.count("min_depth")) {
-        try {
-            max_draft_meters = std::stof(tags["min_depth"]);
-        } catch (...) { max_draft_meters = 25.0f; }
+        try { max_draft_meters = std::stof(tags["min_depth"]); } catch (...) { max_draft_meters = 25.0f; } 
     }
 
-    // 4. Ice Conditions (Geography Check)
-    // Simple heuristic: If latitude is extreme, flag for ice
-    // (We would need geometry for this, assuming first point checks out)
+    // Ice Caps always require icebreakers
     if (!geometry.empty()) {
         double lat = std::abs(geometry[0].lat);
-        if (lat > 60.0) { // Arctic / Antarctic Circle approach
+        if (lat > 60.0) { 
             requires_ice_breaker = true;
-            // Default speed is much slower in ice zones
-            effective_speed_knots = 8.0f; 
         }
     }
 
-    // 5. Initial Static Threat Assessment (e.g., from tags)
+    // Baseline Threat Mapping
     if (tags.count("hazard")) {
         std::string h = tags["hazard"];
         if (h == "piracy") {
-            threat_level = 3;
+            threat_level = 3; 
             threat_type = "piracy";
         } else if (h == "military" || h == "danger_area") {
             threat_level = 2;
@@ -78,54 +68,137 @@ void MaritimeRoute::parse_osm_tags() {
     }
 }
 
+
+// Updates to dynamic + calculated fields from Thalamus signaling
 void MaritimeRoute::update_metrics() {
-    // 1. Calculate Distance in Nautical Miles (1 NM = 1.852 km)
+    // Distance
     if (distance_nautical_miles <= 0.001f) {
-        double km = get_length_km();
+        [cite_start]double km = get_length_km(); [cite: 918]
         distance_nautical_miles = km / 1.852;
     }
 
-    // 2. Base Speed (Vessel Class Dependent - assuming Container Ship avg)
-    float base_speed = 22.0f; // Max service speed
-    if (requires_ice_breaker) base_speed = 10.0f;
+    // Hydrodynamics: Wave & Wind Added Resistance
+    // Ship speed loss in waves is roughly proportional to the square of the wave height.
+    // Empirical Kw (Wave Coefficient) for a typical 300m cargo vessel ~ 0.012
+    const float k_wave = 0.012f;
+    float wave_speed_loss = design_speed_knots * (k_wave * std::pow(wave_height_meters, 2.0f));
 
-    // 3. Weather Penalty (Sea State)
-    // Douglas Scale:
-    // 0-3: No effect
-    // 4-5: Moderate (Slow down 10-20%)
-    // 6-7: Rough (Slow down 40-60%)
-    // 8-9: Survival Mode (Heave to / Speed ~0-5 knots)
-    float weather_factor = 1.0f;
-    if (sea_state_level >= 8.0f) weather_factor = 0.1f;
-    else if (sea_state_level >= 6.0f) weather_factor = 0.5f;
-    else if (sea_state_level >= 4.0f) weather_factor = 0.85f;
+    // Wind Resistance: Headwind (+) reduces speed, tailwind (-) slightly helps but non-linearly.
+    // Empirical wind slip: ~1 knot of speed loss per 20 knots of headwind.
+    float wind_speed_loss = wind_component_knots / 20.0f; 
 
-    // 4. Threat Penalty (Geopolitics)
-    // Threat Level 0-2: No speed impact (maybe slight increase to clear zone)
-    // Threat Level 3-4: Convoys required (Speed limited to convoy speed ~12-14 kn)
-    // Threat Level 5: Route Closed
-    float threat_factor = 1.0f;
+    // Compute weather-restricted speed
+    float weather_speed = design_speed_knots - wave_speed_loss - wind_speed_loss;
+    if (weather_speed < 2.0f) weather_speed = 2.0f; // Minimal steerage way (Heave-to)
+
+    // Ice Constraints 
+    if (ice_coverage_pct > 0.1f) {
+        requires_ice_breaker = true;
+        float ice_speed = 12.0f * (1.0f - ice_coverage_pct);
+        if (ice_speed < 3.0f) ice_speed = 3.0f; // Crawl
+        
+        weather_speed = std::min(weather_speed, ice_speed);
+    } else if (requires_ice_breaker) {
+        // Clear water but designated ice zone (bergy bits risk)
+        weather_speed = std::min(weather_speed, 12.0f);
+    }
+
+    // Threat Constraints (Convoy & Blockade)
+    float threat_speed_limit = 999.0f;
     if (threat_level >= 5) {
-        threat_factor = 0.0f; // Blockade
+        threat_speed_limit = 0.0f; // Blockade / Route Closed
     } else if (threat_level >= 3) {
-        // Convoy speed limit overrides base speed
-        // If base * weather is > 14, cap it at 14.
-        float convoy_speed = 14.0f; 
-        if ((base_speed * weather_factor) > convoy_speed) {
-            // Effectively reduces speed to convoy pace
-            threat_factor = convoy_speed / (base_speed * weather_factor);
+        // Convoy speed limits (navies escort at speed of slowest vessel, usually ~12-14 knots)
+        threat_speed_limit = 14.0f; 
+        insurance_premium_mult = 10.0f; // War Risk Surcharge 
+    } else {
+        insurance_premium_mult = 1.0f; 
+    }
+
+    // Final Effective Speed is the lowest constraint
+    effective_speed_knots = std::min(weather_speed, threat_speed_limit);
+
+    // Admiralty Fuel Coefficient
+    // Fuel Burn = (Displacement^(2/3) * V^3) / C. 
+    // Simplified ratio: Fuel penalty scales with (DesignSpeed / EffectiveSpeed) if trying to push through.
+    if (effective_speed_knots > 0.0f && effective_speed_knots < design_speed_knots) {
+        float resistance_factor = 1.0f + (k_wave * std::pow(wave_height_meters, 2.0f));
+        fuel_efficiency_multiplier = resistance_factor;
+    } else {
+        fuel_efficiency_multiplier = 1.0f;
+    }
+
+    // Latency
+    if (effective_speed_knots > 0.1f) {
+        [cite_start]travel_time_hours = distance_nautical_miles / effective_speed_knots; [cite: 931]
+    } else {
+        travel_time_hours = 99999.9f; [cite_start]// Stuck [cite: 930]
+    }
+}
+
+
+// Main signal routing function to properly apply update_metrics() to new signal arrival
+void MaritimeRoute::process_packet(const json& sig) {
+    std::lock_guard<std::mutex> lock(route_mutex);
+    std::string category = sig.value("category", "none");
+
+    // Weather and Sea State (effective_speed, fuel_multiplier)
+    if (category == "weather" || category == "sea_state") {
+        if (sig.contains("wave_height_m")) {
+            wave_height_meters = sig["wave_height_m"].get<float>();
+            
+            // Map wave height back to Douglas Sea State 
+            if (wave_height_meters < 0.1f) sea_state_level = 0;
+            else if (wave_height_meters < 0.5f) sea_state_level = 2;
+            else if (wave_height_meters < 1.25f) sea_state_level = 3;
+            else if (wave_height_meters < 2.5f) sea_state_level = 4;
+            else if (wave_height_meters < 4.0f) sea_state_level = 5;
+            else if (wave_height_meters < 6.0f) sea_state_level = 6;
+            else if (wave_height_meters < 9.0f) sea_state_level = 7;
+            else if (wave_height_meters < 14.0f) sea_state_level = 8;
+            else sea_state_level = 9;
         }
-        insurance_premium_mult = 10.0f; // War Risk Surcharge
-    } else {
-        insurance_premium_mult = 1.0f;
+        if (sig.contains("wind_headwind_knots")) {
+            wind_component_knots = sig["wind_headwind_knots"].get<float>();
+        }
     }
 
-    // 5. Final Calculation
-    effective_speed_knots = base_speed * weather_factor * threat_factor;
-
-    if (effective_speed_knots < 0.1f) {
-        travel_time_hours = 99999.9f; // Effectively infinite / stuck
-    } else {
-        travel_time_hours = distance_nautical_miles / effective_speed_knots;
+    // Geopolitical Threats (threat_level, effective_speed limit)
+    else if (category == "threat" || category == "security") {
+        if (sig.contains("level")) {
+            threat_level = sig["level"].get<int>(); 
+        }
+        if (sig.contains("type")) {
+            threat_type = sig["type"].get<std::string>();
+        }
     }
+
+    // Ice coverage (effective_speed limit)
+    else if (category == "ice") {
+        if (sig.contains("coverage_pct")) {
+            ice_coverage_pct = sig["coverage_pct"].get<float>();
+        }
+    }
+
+    last_update = sig.value("timestamp", 0LL);
+    update_metrics();
+}
+
+
+// JSON packager for archival
+json MaritimeRoute::get_json_state() const {
+    std::lock_guard<std::mutex> lock(route_mutex);
+    return {
+        {"id", osm_id},
+        {"type", type},
+        {"sea_state", sea_state_level},
+        {"wave_height_m", wave_height_meters},
+        {"threat_level", threat_level},
+        {"ice_coverage", ice_coverage_pct},
+        {"fuel_efficiency_mult", fuel_efficiency_multiplier},
+        {"effective_speed_kts", effective_speed_knots},
+        {"travel_time_h", travel_time_hours},
+        {"insurance_mult", insurance_premium_mult},
+        {"last_update", last_update}
+    };
 }

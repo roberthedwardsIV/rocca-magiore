@@ -21,16 +21,29 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 
 RUN printf "#!/bin/bash\n\
-cd /app\n\
-python3 src/data_analysis/seismic_brain.py &\n\
-python3 src/data_analysis/radio_news_brain.py &\n\
-python3 src/data_analysis/aviation_brain.py &\n\
+# Level 0: Infrastructure\n\
+until pg_isready -h hippocampus -p 5432 -U rocco_admin; do\n\
+  echo 'Waiting for Hippocampus...' && sleep 2\n\
+done\n\
+\n\
+# Level 1: Static Knowledge Seeding\n\
+python3 src/utils/seed_cities.py\n\
+python3 src/utils/seed_registry.py\n\
+\n\
+# Level 2: Physical/Financial Association\n\
+# Note: synapse_builder will loop until OSM assets appear in DB\n\
+python3 src/utils/synapse_builder.py\n\
+\n\
+# Level 3: Active Intelligence (Consciousness)\n\
+python3 src/data_analysis/financial_parser.py & # Must be up to receive discovery tasks\n\
 python3 src/utils/aviation_baselines.py &\n\
-python3 src/data_analysis/twitter_recon_brain.py &\n\
-python3 src/trainers/asset_network_solver.py &\n\
 python3 src/trainers/maritime_trainer.py &\n\
+python3 src/trainers/asset_network_solver.py &\n\
+python3 src/data_analysis/seismic_brain.py &\n\
+python3 src/data_analysis/aviation_brain.py &\n\
 python3 src/data_analysis/maritime_brain.py &\n\
-python3 src/data_analysis/financial_parser.py" > /start_brains.sh
+python3 src/data_analysis/radio_news_brain.py\n\
+python3 src/data_analysis/twitter_recon_brain.py &\n" > /start_brains.sh
 
 RUN chmod +x /start_brains.sh
 

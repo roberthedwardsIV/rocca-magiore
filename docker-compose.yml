@@ -1,9 +1,11 @@
 version: '3.8'
 
 services:
-  # ------------------- Sensory Receptors (C++ Data Streams) -------------------
+  # ------------------- Sensory Receptors (C++ | Data Streams) -------------------
   sensory_receptors:
-    build: ./sensory_receptors
+    build: 
+      context: .
+      dockerfile: ./sensory_receptors/Dockerfile
     container_name: sensory_receptors
     volumes:
       - ./shared_data:/shared
@@ -18,12 +20,13 @@ services:
     depends_on:
       - hippocampus
       - corpus_callosum
+      - ibkr_gateway
     networks:
       - rocco_net
     tty: true
     restart: always
 
-  # ----------------- Frontal Lobe (Python Controlled AI Models) ----------------
+  # ----------------- Frontal Lobe (Python | AI Models + Data Analysis) ----------------
   frontal_lobe:
     build: ./frontal_lobe
     shm_size: '5gb'
@@ -47,9 +50,11 @@ services:
       - rocco_net
     tty: true
 
-# ------------------- Thalamus (C++ State & Fusion Relay) -------------------
+# ------------------- Thalamus (C++ | State + Fusion Relay) -------------------
   thalamus:
-    build: ./thalamus
+    build: 
+      context: .
+      dockerfile: ./thalamus/Dockerfile
     volumes:
       - ./thalamus:/app
       - ./common:/app/common         
@@ -67,9 +72,11 @@ services:
       - rocco_net
     restart: always
 
-# ------------------ Brainstem (C++ Execution Engine) ------------------
+# ------------------ Brainstem (C++ | Execution Engine) ------------------
   brainstem:
-    build: ./brainstem
+    build: 
+      context: .
+      dockerfile: ./brainstem/Dockerfile
     volumes:
       - ./brainstem:/app
       - ./common:/app/common
@@ -78,11 +85,30 @@ services:
       - REDIS_HOST=corpus_callosum
     depends_on:
       - corpus_callosum
+      - ibkr_gateway
     networks:
       - rocco_net
     restart: always
-    
-  # ----------------- Hippocampus (Postgres/gis SQL Database) -----------------
+
+  # ------------------ IBKR Gateway (Brokerage Access) ------------------
+  ibkr_gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    container_name: ibkr_gateway
+    environment:
+      - TWS_USERID=${TWS_USERID}       
+      - TWS_PASSWORD=${TWS_PASSWORD}   
+      - TRADING_MODE=paper             
+      - READ_ONLY_API=false            
+      - ACCEPT_INCOMING_CONNECTION=true 
+      - VNC_SERVER_PASSWORD=secure_vnc_pass
+    ports:
+      - "4001:4001"  # API Port
+      - "5900:5900"  # VNC Port
+    networks:
+      - rocco_net
+    restart: always
+
+  # ----------------- Hippocampus (Postgres/gis SQL | Database) -----------------
   hippocampus:
     image: postgis/postgis:15-3.3
     container_name: hippocampus
@@ -98,7 +124,7 @@ services:
     ports:
       - "5432:5432"
 
-  # ------------------ Corpus Callosum (Redis Messaging Relay) ------------------
+  # ------------------ Corpus Callosum (Redis | Messaging Relay) ------------------
   corpus_callosum:
     image: redis:alpine
     container_name: corpus_callosum

@@ -5,29 +5,39 @@
 
 class RoadRoute : public BaseRoute {
 public:
-    // --- QUANTITATIVE METRICS (For Physics & Triggers) ---
-    float base_capacity_vph;   // Vehicles Per Hour (e.g., 2000 * lanes)
-    float current_flow_vph;    // Real-time traffic throughput
-    float max_weight_tons;     // Critical for heavy logistics (bridge/road limits)
-    float surface_quality;     // 0.0 (Destroyed) -> 1.0 (Perfect Asphalt)
-    float travel_time_hours;   // Dynamic latency based on length/speed/traffic
-    float length_km;           // Cached length for speed calculations
+    // Static
+    int lanes;                  // Lane count   
+    int max_speed_kmh;          // Speed limit (km/hr)
+    bool is_one_way;            // One-Way Road Flag
+    float max_weight_tons;      // Weight limit (tons)
+    std::string classification; // Road type
 
-    // --- OSM ATTRIBUTES ---
-    int lanes;                 // "lanes" tag
-    int max_speed_kmh;         // "maxspeed" tag
-    bool is_one_way;           // "oneway" tag
-    std::string classification;// "highway" tag (motorway vs residential)
+    // Dynamic
+    float current_flow_vph;     // Curent vehicles per hour   
+    float surface_quality;      // Integrity of road (0-1)
+    float base_capacity_vph;    // Baseline vehicles per hour
+    
+    // Physics
+    float base_friction;        // Baseline Friction Coefficient
+    float current_friction;     // Baseline Friction Coefficient
+    float heavy_vehicle_pct;    // Commercial Truck Percentage (%)
 
-    // Constructor
+    // Calculated
+    float travel_time_hours;    // Travel time (hours)
+    float effective_speed_kmh;  // Current "Speed Limit" (kmh) 
+    float current_weight_limit; // Current "Weight Limit" (tons)
+    bool logistics_accessible;  // Flag for commercial truck navigability
+
     RoadRoute(long long id, std::string name);
 
-    // Parses tags to calculate the quantitative baselines above
-    // e.g., surface="dirt" -> surface_quality = 0.4
-    void parse_osm_tags();
+    void parse_osm_tags();     
+    void update_metrics();     
+    
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
 
-    // Updates travel_time_hours based on current flow and surface quality
-    void update_metrics();
+private:
+    float calculate_bpr_delay(float volume, float capacity) const;
 };
 
 #endif

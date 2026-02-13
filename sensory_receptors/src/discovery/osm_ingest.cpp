@@ -8,6 +8,8 @@
 #include <osmium/handler.hpp>
 #include <osmium/visitor.hpp>
 #include <osmium/geom/wkb.hpp>
+#include <osmium/area/assembler.hpp>            
+#include <osmium/area/multipolygon_manager.hpp> 
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 
@@ -412,9 +414,13 @@ int main(int argc, char* argv[]) {
         
         osmium::area::Assembler::config_type assembler_config;
         osmium::area::MultipolygonManager<osmium::area::Assembler> mp_manager{assembler_config};
-
+        
         std::cout << "[PHASE 1] Assembling Geometry (Relations)..." << std::endl;
-        osmium::relations::read_relations(reader, mp_manager);
+        
+        // FIX: Manual read loop to avoid missing header dependency
+        while (osmium::memory::Buffer buffer = reader.read()) {
+            osmium::apply(buffer, mp_manager);
+        }
         reader.close();
 
         std::cout << "[PHASE 2] Ingesting The World..." << std::endl;

@@ -10,8 +10,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . .
 
+COPY ./common /app/common
+
+COPY ./thalamus /app/thalamus
+
+WORKDIR /app/thalamus
 RUN mkdir -p build && cd build && \
     cmake .. && \
     make -j$(nproc)
@@ -27,7 +31,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY --from=builder /app/build/thalamus_engine .
+COPY --from=builder /app/thalamus/build/thalamus_engine .
 
 ENV REDIS_HOST=corpus_callosum
 ENV DB_HOST=hippocampus

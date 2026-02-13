@@ -10,7 +10,9 @@
 
 #include "events/BaseEvent.hpp"
 #include "assets/BaseAsset.hpp"
-#include "supply_lines/BaseSupplyLine.hpp"
+#include "routes/BaseRoute.hpp"
+#include "hubs/BaseHub.hpp"
+#include "chokepoints/BaseChokePoint.hpp"
 
 class GlobalRegistry {
 public:
@@ -21,9 +23,16 @@ public:
     static void remove_event(const std::string& entity_id);
 
     static std::shared_ptr<BaseAsset> get_asset(int asset_id);
-    static std::shared_ptr<BaseSupplyLine> get_supply_line(int id, const std::string& type = "");
     static void for_each_asset(std::function<void(std::shared_ptr<BaseAsset>)> func);
-    static void for_each_supply_line(std::function<void(std::shared_ptr<BaseSupplyLine>)> func);
+
+    static std::shared_ptr<BaseRoute> get_route(long long id, const std::string& type = "");
+    static void for_each_route(std::function<void(std::shared_ptr<BaseRoute>)> func);
+
+    static std::shared_ptr<BaseHub> get_hub(long long id, const std::string& type = "");
+    static void for_each_hub(std::function<void(std::shared_ptr<BaseHub>)> func);
+
+    static std::shared_ptr<BaseChokePoint> get_chokepoint(int id, const std::string& type = "");
+    static void for_each_chokepoint(std::function<void(std::shared_ptr<BaseChokePoint>)> func);
 
 private:
     static float calculate_distance(float lat1, float lon1, float lat2, float lon2);
@@ -34,8 +43,14 @@ private:
     static std::unordered_map<int, std::shared_ptr<BaseAsset>> asset_map;
     static std::mutex asset_mtx;
 
-    static std::unordered_map<int, std::shared_ptr<BaseSupplyLine>> supply_map;
-    static std::mutex supply_mtx;
+    static std::unordered_map<long long, std::shared_ptr<BaseRoute>> route_map;
+    static std::mutex route_mtx;
+
+    static std::unordered_map<long long, std::shared_ptr<BaseHub>> hub_map;
+    static std::mutex hub_mtx;
+
+    static std::unordered_map<int, std::shared_ptr<BaseChokePoint>> chokepoint_map;
+    static std::mutex chokepoint_mtx;
 };
 
 #endif

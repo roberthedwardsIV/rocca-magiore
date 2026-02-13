@@ -8,23 +8,40 @@
 
 // Event Subclasses
 #include "events/EarthquakeTracker.hpp"
+#include "events/WildfireTracker.hpp"
 
 // Asset Subclasses
 #include "assets/MineAsset.hpp"
 #include "assets/RefineryAsset.hpp"
+#include "assets/SmelterAsset.hpp"
 
-// Supply Line Subclasses
-#include "supply_lines/RailLine.hpp"
-#include "supply_lines/RailYard.hpp"
-#include "supply_lines/MaritimeRoute.hpp"
-#include "supply_lines/MaritimePort.hpp"
-#include "supply_lines/PipelineLine.hpp"
-#include "supply_lines/PipelineStation.hpp"
-#include "supply_lines/Highway.hpp"
-#include "supply_lines/Airport.hpp"
-#include "supply_lines/Airspace.hpp"
-#include "supply_lines/CanalRoute.hpp"
-#include "supply_lines/CanalLock.hpp"
+// Route Subclasses
+#include "routes/RailRoute.hpp"
+#include "routes/RoadRoute.hpp"
+#include "routes/MaritimeRoute.hpp"
+#include "routes/AirRoute.hpp"
+#include "routes/PipelineRoute.hpp"
+#include "routes/PowerTransmissionRoute.hpp"
+#include "routes/WaterwayRoute.hpp"
+
+// Hub Subclasses
+#include "hubs/PortHub.hpp"
+#include "hubs/AirportHub.hpp"
+#include "hubs/RailNodeHub.hpp"
+#include "hubs/DistributionHub.hpp"
+#include "hubs/PowerSubstationHub.hpp"
+#include "hubs/PowerPlantHub.hpp"
+
+// Chokepoint Subclasses
+#include "chokepoints/BridgeChokePoint.hpp"
+#include "chokepoints/TunnelChokePoint.hpp"
+#include "chokepoints/BorderChokePoint.hpp"
+#include "chokepoints/CanalLockChokePoint.hpp"
+#include "chokepoints/DamChokePoint.hpp"
+#include "chokepoints/RunwayChokePoint.hpp"
+#include "chokepoints/PowerSubstationChokePoint.hpp"
+#include "chokepoints/PortCraneChokePoint.hpp"
+#include "chokepoints/PumpingStationChokePoint.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -33,10 +50,18 @@
 // Registry definitions (events, assets + supply assets)
 std::unordered_map<std::string, std::shared_ptr<BaseEvent>> GlobalRegistry::event_map;
 std::mutex GlobalRegistry::event_mtx;
+
 std::unordered_map<int, std::shared_ptr<BaseAsset>> GlobalRegistry::asset_map;
 std::mutex GlobalRegistry::asset_mtx;
-std::unordered_map<int, std::shared_ptr<BaseSupplyLine>> GlobalRegistry::supply_map;
-std::mutex GlobalRegistry::supply_mtx;
+
+std::unordered_map<long long, std::shared_ptr<BaseRoute>> GlobalRegistry::route_map;
+std::mutex GlobalRegistry::route_mtx;
+
+std::unordered_map<long long, std::shared_ptr<BaseHub>> GlobalRegistry::hub_map;
+std::mutex GlobalRegistry::hub_mtx;
+
+std::unordered_map<int, std::shared_ptr<BaseChokePoint>> GlobalRegistry::chokepoint_map;
+std::mutex GlobalRegistry::chokepoint_mtx;
 
 
 // Helper function: haversine distance calculation
@@ -118,11 +143,9 @@ std::shared_ptr<BaseAsset> GlobalRegistry::get_asset(int id) {
     if (!meta.valid) return nullptr;
 
     std::shared_ptr<BaseAsset> asset;
-    if (meta.type == "mine") {
-        asset = std::make_shared<MineAsset>(id, meta.name);
-    } else if (meta.type == "refinery") {
-        asset = std::make_shared<RefineryAsset>(id, meta.name);
-    }
+    if (meta.type == "mine") asset = std::make_shared<MineAsset>(id, meta.name);
+    else if (meta.type == "refinery") asset = std::make_shared<RefineryAsset>(id, meta.name);
+    else if (meta.type == "smelter") asset = std::make_shared<SmelterAsset>(id, meta.name);
     
     if (asset) asset_map[id] = asset;
     return asset;
@@ -138,33 +161,104 @@ void GlobalRegistry::for_each_asset(std::function<void(std::shared_ptr<BaseAsset
 }
 
 
-// Searches for existing or creates new supply_line state class as applicable
-std::shared_ptr<BaseSupplyLine> GlobalRegistry::get_supply_line(int id, const std::string& type) {
-    std::lock_guard<std::mutex> lock(supply_mtx);
-    if (supply_map.count(id)) return supply_map[id];
+// --- ROUTE LOGIC (Factories) ---
+std::shared_ptr<BaseRoute> GlobalRegistry::get_route(long long id, const std::string& type) {
+    std::lock_guard<std::mutex> lock(route_mtx);
+    if (route_map.count(id)) return route_map[id];
 
-    std::shared_ptr<BaseSupplyLine> line;
-    if (type == "rail_line") line = std::make_shared<RailLine>(id, "RailLine_" + std::to_string(id));
-    else if (type == "rail_yard") line = std::make_shared<RailYard>(id, "RailYard_" + std::to_string(id));
-    else if (type == "maritime_route") line = std::make_shared<MaritimeRoute>(id, "MaritimeRoute_" + std::to_string(id));
-    else if (type == "maritime_port") line = std::make_shared<MaritimePort>(id, "MaritimePort_" + std::to_string(id));
-    else if (type == "pipeline_line") line = std::make_shared<PipelineLine>(id, "PipelineLine_" + std::to_string(id));
-    else if (type == "pipeline_station") line = std::make_shared<PipelineStation>(id, "PipelineStation_" + std::to_string(id));
-    else if (type == "highway") line = std::make_shared<Highway>(id, "Highway_" + std::to_string(id));
-    else if (type == "airport") line = std::make_shared<Airport>(id, "Airport_" + std::to_string(id));
-    else if (type == "airspace") line = std::make_shared<Airspace>(id, "Airspace_" + std::to_string(id));
-    else if (type == "canal_route") line = std::make_shared<CanalRoute>(id, "CanalRoute_" + std::to_string(id));
-    else if (type == "canal_lock") line = std::make_shared<CanalLock>(id, "CanalLock_" + std::to_string(id));
+    // Lazy instantiation factory
+    std::shared_ptr<BaseRoute> route;
+    std::string name = "Route_" + std::to_string(id);
 
-    if (line) supply_map[id] = line;
-    return line;
+    if (type == "rail_line" || type == "rail_mainline") 
+        route = std::make_shared<RailRoute>(id, name);
+    else if (type == "maritime_route") 
+        route = std::make_shared<MaritimeRoute>(id, name);
+    else if (type == "pipeline" || type == "pipeline_line") 
+        route = std::make_shared<PipelineRoute>(id, name);
+    else if (type == "highway" || type == "highway_trunk" || type == "road") 
+        route = std::make_shared<RoadRoute>(id, name);
+    else if (type == "air_route" || type == "air") 
+        route = std::make_shared<AirRoute>(id, name);
+    else if (type == "waterway" || type == "inland_waterway") 
+        route = std::make_shared<WaterwayRoute>(id, name);
+    else if (type == "power_line" || type == "power_grid") 
+        route = std::make_shared<PowerTransmissionRoute>(id, name);
+
+    if (route) route_map[id] = route;
+    return route;
 }
 
+void GlobalRegistry::for_each_route(std::function<void(std::shared_ptr<BaseRoute>)> func) {
+    std::lock_guard<std::mutex> lock(route_mtx);
+    for (auto& [id, route] : route_map) func(route);
+}
 
-// Method to iterate through all supply lines in supply registry (thread-safe) without individual mutex locks/unlocks for each one
-void GlobalRegistry::for_each_supply_line(std::function<void(std::shared_ptr<BaseSupplyLine>)> func) {
-    std::lock_guard<std::mutex> lock(supply_mtx);
-    for (auto& [id, line] : supply_map) {
-        func(line);
-    }
+// --- HUB LOGIC (Factories) ---
+std::shared_ptr<BaseHub> GlobalRegistry::get_hub(long long id, const std::string& type) {
+    std::lock_guard<std::mutex> lock(hub_mtx);
+    if (hub_map.count(id)) return hub_map[id];
+
+    std::shared_ptr<BaseHub> hub;
+    std::string name = "Hub_" + std::to_string(id);
+    // Placeholder Lat/Lon (0.0) -> Should ideally be passed in or fetched via DB if not present
+    double lat = 0.0, lon = 0.0; 
+
+    if (type == "port" || type == "maritime_port") 
+        hub = std::make_shared<PortHub>(id, name, lat, lon);
+    else if (type == "airport" || type == "aerodrome") 
+        hub = std::make_shared<AirportHub>(id, name, lat, lon);
+    else if (type == "rail_node" || type == "marshalling_yard") 
+        hub = std::make_shared<RailNodeHub>(id, name, lat, lon);
+    else if (type == "warehouse" || type == "logistics_terminal" || type == "storage_tank") 
+        hub = std::make_shared<DistributionHub>(id, name, lat, lon);
+    else if (type == "substation") 
+        hub = std::make_shared<PowerSubstation>(id, name, lat, lon);
+    else if (type == "power_plant") 
+        hub = std::make_shared<PowerPlantHub>(id, name, lat, lon);
+
+    if (hub) hub_map[id] = hub;
+    return hub;
+}
+
+void GlobalRegistry::for_each_hub(std::function<void(std::shared_ptr<BaseHub>)> func) {
+    std::lock_guard<std::mutex> lock(hub_mtx);
+    for (auto& [id, hub] : hub_map) func(hub);
+}
+
+// --- CHOKEPOINT LOGIC (Factories) ---
+std::shared_ptr<BaseChokePoint> GlobalRegistry::get_chokepoint(int id, const std::string& type) {
+    std::lock_guard<std::mutex> lock(chokepoint_mtx);
+    if (chokepoint_map.count(id)) return chokepoint_map[id];
+
+    std::shared_ptr<BaseChokePoint> cp;
+    std::string name = "CP_" + std::to_string(id);
+    double lat = 0.0, lon = 0.0; // Placeholders
+
+    if (type == "bridge") 
+        cp = std::make_shared<BridgeChokePoint>(id, name, lat, lon, 100.0f, 500.0f, 15.0f);
+    else if (type == "tunnel") 
+        cp = std::make_shared<TunnelChokePoint>(id, name, lat, lon, 2000.0f);
+    else if (type == "border" || type == "border_crossing") 
+        cp = std::make_shared<BorderChokePoint>(id, name, lat, lon, "UNK", "UNK");
+    else if (type == "canal_lock") 
+        cp = std::make_shared<CanalLockChokePoint>(id, name, lat, lon, 12.0f, 33.0f);
+    else if (type == "dam") 
+        cp = std::make_shared<DamChokePoint>(id, name, lat, lon, 1000000.0f);
+    else if (type == "runway") 
+        cp = std::make_shared<RunwayChokePoint>(id, name, lat, lon, 3000.0f, 45.0f, "asphalt");
+    else if (type == "pumping_station") 
+        cp = std::make_shared<PumpingStationChokePoint>(id, name, lat, lon, 1000.0f, 50000.0f);
+    else if (type == "crane") 
+        cp = std::make_shared<PortCraneChokePoint>(id, name, lat, lon, 60.0f, 40.0f);
+    else if (type == "substation_cp") 
+        cp = std::make_shared<PowerSubstationChokePoint>(id, name, lat, lon, 220.0f, 200.0f);
+
+    if (cp) chokepoint_map[id] = cp;
+    return cp;
+}
+
+void GlobalRegistry::for_each_chokepoint(std::function<void(std::shared_ptr<BaseChokePoint>)> func) {
+    std::lock_guard<std::mutex> lock(chokepoint_mtx);
+    for (auto& [id, cp] : chokepoint_map) func(cp);
 }

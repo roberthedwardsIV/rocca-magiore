@@ -130,7 +130,7 @@ public:
 
     void connect() {
         //    Port 4001 is standard for Gateway; use 7496 if using TWS Live, 7497 for TWS Paper
-        if (client->eConnect("192.168.1.164", 4001, 100)) {
+        if (client->eConnect("ibkr_gateway", 4001, 100)) {
             std::cout << "[MARKET FEED] Connected to IBKR Gateway." << std::endl;
 
             // --- CONFIGURATION FOR MIXED DATA PERMISSIONS ---

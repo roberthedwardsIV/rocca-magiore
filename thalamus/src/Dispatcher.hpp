@@ -13,11 +13,13 @@ public:
 private:
     static void handle_event_signal(const json& sig);
     static void handle_asset_signal(const json& sig);
-    static void handle_supply_signal(const json& sig);
     static void handle_ticker_signal(const json& sig);
 
+    static void handle_route_signal(const json& sig);     
+    static void handle_hub_signal(const json& sig);       
+    static void handle_chokepoint_signal(const json& sig);
+
     static void trigger_twitter_recon(const std::string& id, const std::string& type, float lat, float lon, long long ts);
-    static std::string extract_station_prefix(const std::string& entity_id);
 };
 
 #endif
