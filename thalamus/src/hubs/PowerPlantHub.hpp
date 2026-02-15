@@ -2,42 +2,51 @@
 #define POWER_PLANT_HUB_HPP
 
 #include "BaseHub.hpp"
-#include <vector>
+#include <string>
 
 class PowerPlantHub : public BaseHub {
 public:
-    // --- GENERATION CAPABILITY ---
-    float max_output_mw;        // Nameplate Capacity (The hard limit)
-    float min_stable_load_mw;   // Minimum output before shutting down (Coal/Nuclear)
-    float ramp_rate_mw_min;     // How fast can it change output? (Gas=Fast, Nuclear=Slow)
+    // --- GENERATION CAPABILITY (Static) ---
+    float max_output_mw;        // Nameplate Capacity
+    float min_stable_load_mw;   // Minimum run level (Coal/Nuclear)
+    float ramp_rate_mw_min;     // Physical change limit (Thermal Stress)
+    bool is_dispatchable;       // False for Solar/Wind (Weather dependent)
     
-    // --- FUEL & PHYSICS ---
-    std::string fuel_source;    // "coal", "gas", "nuclear", "solar", "wind", "hydro"
-    float efficiency_percent;   // Thermal efficiency (33% Coal vs 60% CCGT)
-    bool is_dispatchable;       // Can we command it? (False for Solar/Wind)
+    // --- FUEL & EFFICIENCY (Physics) ---
+    std::string fuel_source;    // "coal", "gas", "nuclear", "solar", "wind"
+    std::string gen_technology; // "ccgt", "ocgt", "pwr", "pv"
+    float base_heat_rate;       // Efficiency metric (MMBtu/MWh) - Lower is better
     
     // --- DYNAMIC STATE ---
     float current_output_mw;    // Real-time generation
-    float fuel_inventory_tons;  // Coal pile / Gas pressure (0 for Renewables)
-    float capacity_factor;      // Current availability (0.0 - 1.0) due to maintenance/sun
-
-    // --- OPERATIONAL ---
-    bool is_peaker;             // Designed for short bursts (High cost, fast ramp)
-    float startup_cost;         // Cost to turn on (discourages cycling)
+    float target_output_mw;     // Dispatch instruction
+    float fuel_inventory;       // Tons (Coal) or Pressure/Unit (Gas)
+    
+    // --- WEATHER INPUTS (For Renewables) ---
+    float wind_speed_ms;        // Local wind
+    float solar_irradiance;     // W/m2
+    
+    // --- OPERATIONAL METRICS (Calculated) ---
+    float capacity_factor;      // 0.0 - 1.0
+    float fuel_burn_rate;       // Units per hour
+    bool is_tripped;            // Safety shutdown
 
     // Constructor
     PowerPlantHub(long long id, std::string name, double lat, double lon);
 
-    // Parses "generator:source", "plant:output:electricity", "power=plant"
-    // Estimates MW based on "area" for Solar/Wind if explicit tags missing.
-    void parse_osm_tags() override;
-
-    // Updates output based on Ramp Rate limits and Fuel Availability
-    // For Renewables, this needs a "Weather Factor" input (simulated)
-    void update_status() override;
+    // --- INTERFACE IMPLEMENTATION ---
+    // Parses "generator:source", "plant:output:electricity", "generator:method"
+    void parse_osm_tags(const std::unordered_map<std::string, std::string>& tags) override; 
     
-    // Commands the plant to target a specific MW output (clamped by Ramp Rate)
-    void set_target_output(float target_mw);
+    // Calculates Output based on Ramp Limits, Weather (Renewables), or Fuel (Thermal)
+    void update_metrics();
+
+    // Strict Overrides
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
+
+    // Helper: Receive dispatch instruction
+    void set_dispatch_target(float mw);
 };
 
 #endif

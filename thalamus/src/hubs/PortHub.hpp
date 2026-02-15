@@ -2,43 +2,56 @@
 #define PORT_HUB_HPP
 
 #include "BaseHub.hpp"
-#include <vector>
+#include <string>
 
 class PortHub : public BaseHub {
 public:
-    // --- PHYSICAL INFRASTRUCTURE ---
-    int number_of_berths;       // How many ships can dock simultaneously
-    float max_draft_meters;     // Limits the size of vessels (Panamax vs Post-Panamax)
-    float total_quay_length_m;  // Total docking frontage
-    bool has_rail_connection;   // "railway=spur" or similar
-    bool has_ro_ro_ramp;        // Roll-on/Roll-off (Cars/Trucks)
+    // --- PHYSICAL INFRASTRUCTURE (Static) ---
+    int number_of_berths;       
+    float max_draft_meters;     
+    float total_quay_length_m;  
+    bool has_rail_connection;   
+    bool has_ro_ro_ramp;        
 
-    // --- STORAGE CAPACITY (The "Buffer") ---
-    int max_storage_teu;        // Yard capacity in Twenty-foot Equivalent Units
-    int current_storage_teu;    // Current inventory
-    int reefer_plugs;           // Capacity for refrigerated containers
-    
+    // --- STORAGE CAPACITY (Three Modes) ---
+    // 1. Containers (TEU)
+    int max_storage_teu;        
+    int current_storage_teu;
+    int reefer_plugs;           
+
+    // 2. Dry/Liquid Bulk (Raw Commodities)
+    float max_bulk_storage_tons;     
+    float current_bulk_storage_tons;
+
+    // 3. Break Bulk (Finished Metals / Project Cargo) [ADDED]
+    float max_break_bulk_storage_m2; // Covered/Open storage area for metals
+    float current_break_bulk_tons;   // Inventory of Coils/Cathodes
+
     // --- OPERATIONAL METRICS ---
-    float gate_throughput_vph;  // Trucks per hour (Gate capacity)
-    float average_dwell_time_h; // How long cargo sits (Congestion indicator)
-    float congestion_level;     // 0.0 (Empty) -> 1.0 (Gridlock)
-    
+    float gate_throughput_vph;  // Truck gate speed
+    float loading_rate_tph;     // Effective loading speed (varies by cargo type)
+    float average_dwell_time_h; 
+    float congestion_level;     
+
     // --- TYPE SPECIFICS ---
-    // "container", "bulk", "oil", "fishing", "naval"
-    std::string port_type; 
+    // "container", "bulk", "break_bulk", "oil", "general"
+    std::string port_type;
 
     // Constructor
     PortHub(long long id, std::string name, double lat, double lon);
 
-    // Parses "harbour:category", "mooring:depth", "capacity:teu"
-    // Infers capacity from land area if explicit tags are missing.
-    void parse_osm_tags() override;
-
-    // Aggregates throughput from attached Cranes + Gate efficiency
-    // Updates congestion_level based on current_storage / max_storage
-    void update_status() override;
+    // --- INTERFACE IMPLEMENTATION ---
+    // Parses tags to distinguish Bulk Terminals vs. General Cargo (Metal) Ports
+    void parse_osm_tags(const std::unordered_map<std::string, std::string>& tags) override; 
     
-    // Returns the max vessel class this port can handle (e.g., "New Panamax")
+    // Updates throughput: Metal loading (Crane lifts) is slower than Bulk (Conveyor)
+    void update_metrics();
+
+    // Strict Overrides
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
+
+    // Helper: Returns max vessel class (e.g., "Capesize")
     std::string get_max_vessel_class() const;
 };
 

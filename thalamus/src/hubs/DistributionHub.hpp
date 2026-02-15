@@ -6,44 +6,48 @@
 
 class DistributionHub : public BaseHub {
 public:
-    // --- PHYSICAL INFRASTRUCTURE ---
+    // --- PHYSICAL INFRASTRUCTURE (Static) ---
     int num_silos;              // Vertical storage (Grain, Cement)
     int num_tanks;              // Liquid storage (Fuel, Chemicals)
-    float open_yard_area_sqm;   // Flat storage (Coal, Ore, Scrap, Lumber)
-    float warehouse_area_sqm;   // Covered flat storage (Fertilizer, Steel Coils)
+    float open_yard_area_sqm;   // Flat storage (Coal, Ore, Scrap)
+    float warehouse_area_sqm;   // Covered storage (Cathodes, Coils, Ingots)
     
-    // --- LOADING INFRASTRUCTURE ---
-    int weighbridges;           // Critical bottleneck for bulk trucks
-    int tipper_lanes;           // Dump truck unloading slots
-    int loading_spouts;         // Gravity feed (Grain/Cement)
-    bool has_rail_dump;         // Bottom-dump rail siding (Rotary or Trestle)
+    // --- LOADING INFRASTRUCTURE (Static) ---
+    int weighbridges;           // Bottleneck for trucks
+    int tipper_lanes;           // Dump truck slots
+    int loading_spouts;         // Gravity feed (Grain)
+    int gantry_cranes;          // Overhead cranes (Critical for Metal Coils/Slabs)
+    bool has_rail_dump;         // Bottom-dump rail capability
 
-    // --- STORAGE CAPACITY (Mass & Volume) ---
-    float max_capacity_tons;    // The hard limit for heavy bulk (Ore, Steel)
-    float max_capacity_m3;      // The hard limit for light bulk (Grain, Woodchips)
+    // --- STORAGE CAPACITY (Dynamic Limits) ---
+    float max_capacity_tons;    // Mass limit
+    float max_capacity_m3;      // Volume limit
+    
+    // --- DYNAMIC STATE ---
     float current_inventory_tons;
-
-    // --- OPERATIONAL METRICS ---
-    float loading_rate_tph;     // Tons Per Hour (Conveyor/Pump speed)
-    float unloading_rate_tph;   // Tons Per Hour (Dump speed)
-    float truck_turnaround_time_h; // Weigh-in -> Dump -> Weigh-out
+    float loading_rate_tph;     // Outbound speed
+    float unloading_rate_tph;   // Inbound speed
+    float truck_turnaround_time_h; 
 
     // --- COMMODITY SPECIFICS ---
-    // "dry_bulk", "liquid_bulk", "break_bulk" (Steel/Lumber), "neo_bulk"
-    std::string cargo_category;   
-    std::string specific_commodity; // "grain", "coal", "fuel", "aggregate"
+    // "dry_bulk" (Ore), "liquid_bulk" (Fuel), "break_bulk" (Finished Metal)
+    std::string cargo_category;     
+    std::string specific_commodity; // "copper_cathode", "steel_coil", "ore"
 
     // Constructor
     DistributionHub(long long id, std::string name, double lat, double lon);
 
-    // Parses "industrial=depot", "man_made=silo", "content=coal"
-    void parse_osm_tags() override;
-
-    // Updates throughput based on active conveyors/pumps and weighbridge queues
-    void update_status() override;
+    // --- INTERFACE IMPLEMENTATION ---
+    void parse_osm_tags(const std::unordered_map<std::string, std::string>& tags) override; 
     
-    // Returns true if the facility is compatible with the cargo form factor
-    // e.g., A Silo cannot accept Steel Coils; An Open Yard cannot accept Wheat (Rain).
+    // Updates throughput: Break Bulk (Metals) moves slower than Conveyor Bulk
+    void update_metrics();
+
+    // Strict Overrides
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
+
+    // Helper: Compatibility Check (e.g. Cathodes require cover)
     bool can_accept_commodity(const std::string& commodity_type, bool requires_cover) const;
 };
 

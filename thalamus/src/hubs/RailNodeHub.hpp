@@ -6,41 +6,46 @@
 
 class RailNodeHub : public BaseHub {
 public:
-    // --- PHYSICAL INFRASTRUCTURE ---
-    int number_of_tracks;       // Total tracks in the yard
-    float max_train_length_m;   // Longest siding (limiting factor for train size)
-    bool is_hump_yard;          // True = Gravity sorting (High throughput)
-    bool is_electrified;        // Can electric locos enter?
-    bool has_intermodal_lift;   // Can transfer containers to trucks (Gantry cranes)
+    // --- PHYSICAL INFRASTRUCTURE (Static) ---
+    int number_of_tracks;       // Classification tracks
+    float max_train_length_m;   // Longest receiving track (limits train size)
+    bool is_hump_yard;          // True = Gravity sorting (Continuous flow)
+    bool is_electrified;        // Catenary status
+    bool has_intermodal_lift;   // Container Gantry availability
 
-    // --- CAPACITY METRICS ---
-    int classification_bowl_capacity; // Max wagons/cars in sorting area
-    int current_wagons_stored;        // Current inventory
-    float processing_speed_wagons_hr; // Sorting rate (Cars per hour)
-
-    // --- INTERMODAL STATE ---
-    int container_lifts_per_hour;     // Crane speed (if intermodal)
-    int truck_gate_lanes;             // For drayage trucks
-
-    // --- OPERATIONAL STATE ---
-    float congestion_level;           // 0.0 - 1.0 (Yard utilization)
-    float average_dwell_time_h;       // Time a wagon spends in the yard
+    // --- KINEMATICS & EQUIPMENT (Physics) ---
+    float hump_speed_kmh;       // Gravity sorting speed
+    float switcher_accel_ms2;   // Locomotive acceleration (flat switching)
+    float avg_wagon_length_m;   // Standard car length
+    
+    // --- CAPACITY STATE (Queuing Theory) ---
+    int max_storage_wagons;     // Geometric limit (Total Track Length / Wagon Length)
+    int current_wagons_stored;  // Inventory (Queue Length)
+    
+    // --- OPERATIONAL METRICS (Calculated) ---
+    float service_rate_wagons_hr; // μ (Processing power)
+    float arrival_rate_wagons_hr; // λ (Incoming flow)
+    float utilization_rho;        // ρ = λ / μ
+    float average_dwell_time_h;   // E(W) from Kingman's Formula
 
     // --- IDENTIFIERS ---
-    std::string yard_type;      // "marshalling", "intermodal", "station", "industrial"
-    std::string operator_name;  // e.g., "DB Cargo", "Union Pacific"
+    std::string yard_type;      // "marshalling", "intermodal", "industrial"
 
     // Constructor
     RailNodeHub(long long id, std::string name, double lat, double lon);
 
-    // Parses "railway=yard", "service=siding", "electrified"
-    void parse_osm_tags() override;
-
-    // Updates throughput based on Hump Yard status and Congestion
-    // Calculates dwell time penalty if yard is full
-    void update_status() override;
+    // --- INTERFACE IMPLEMENTATION ---
+    void parse_osm_tags(const std::unordered_map<std::string, std::string>& tags) override; 
     
-    // Returns true if a specific train length fits in the receiving tracks
+    // Updates dwell time using Kingman's Approximation:
+    // Delay explodes exponentially as utilization approaches 1.0
+    void update_metrics();
+
+    // Strict Overrides
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
+
+    // Helper: Geometry check
     bool can_accept_train(float train_length_m) const;
 };
 
