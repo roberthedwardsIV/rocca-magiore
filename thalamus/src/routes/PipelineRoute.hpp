@@ -5,33 +5,33 @@
 
 class PipelineRoute : public BaseRoute {
 public:
-    // --- PHYSICAL GEOMETRY ---
-    float diameter_inches;     // The primary capacity constraint (e.g., 48" vs 12")
-    float max_pressure_psi;    // Maximum Allowable Operating Pressure (MAOP)
-    float wall_thickness_mm;   // Determines burst pressure
-    
-    // --- PRODUCT & PHYSICS ---
-    std::string product_type;  // "oil", "gas", "water", "hydrogen", "refined_products"
-    bool is_reversible;        // Can flow direction be switched?
-    
-    // --- DYNAMIC STATE ---
-    float current_flow_rate;   // Barrels per day (Oil) or MMscf/d (Gas)
-    float current_pressure_psi;// Real-time pressure reading
+    // Static
+    float diameter_inches;     // Pipe Diameter (in.)
+    float max_pressure_psi;    // Maximum Allowable Operating Pressure (PSI)
+    float wall_thickness_mm;   // Pipe Thickness (mm)
+    bool is_reversible;        // Bi-directional capability
+    std::string product_type;  // "tailings", "concentrate", "water"
+    float product_density;     // Product Density (kg/m3) 
+    float product_viscosity;   // cSt 
+
+    // Dynamic
+    float current_flow_rate;   // bpd or MMscfd 
+    float current_pressure_psi;// Real-time pressure (PSI)
     bool leak_detected;        // Integrity failure
     bool maintenance_mode;     // Pigging / Inspection
 
-    // --- OPERATIONAL ---
-    float max_capacity_bpd;    // Calculated max flow (Barrels Per Day) - Oil
-    float max_capacity_mmscfd; // Calculated max flow (Million Std Cubic Feet/Day) - Gas
+    // Calculated
+    float max_capacity_bpd;    // Liquid Capacity
+    float max_capacity_mmscfd; // Gas Capacity
+    float efficiency_factor;   // 1.0 (Clean) -> 0.7 (Waxy buildup/Friction)
 
-    // Constructor
     PipelineRoute(long long id, std::string name);
 
-    // Parses "substance", "pressure", "diameter", "man_made=pipeline"
-    void parse_osm_tags();
-
-    // Calculates max capacity based on Diameter + Pressure Limit
-    void update_metrics();
+    void parse_osm_tags();     
+    void update_metrics();     
+    
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
 };
 
 #endif

@@ -5,34 +5,33 @@
 
 class AirRoute : public BaseRoute {
 public:
-    // --- PHYSICAL GEOMETRY ---
-    float distance_nm;         // Nautical Miles (Standard for Aviation)
-    int min_flight_level;      // Minimum altitude (Mountain clearance / MEA)
-    int max_flight_level;      // Maximum altitude (Airspace ceiling)
+    // Static 
+    float distance_nm;                  // Great Circle Distance (Nautical Miles)
+    int min_flight_level;               // Minimum Enroute Altitude (MEA)
+    int max_flight_level;               // Service Ceiling / Airspace Cap
+    bool etops_required;                // Requires extended twin-engine safety rating
+    int etops_rating_minutes;           // Distance to nearest divert
+
+    // Dynamic
+    float wind_component_knots;         // Wind Speed (+/- knots)
+    float turbulence_index;             // Turbulence Score (0-1)
+    bool is_icing_conditions;           // Ice Conditions Flag
     
-    // --- DYNAMIC WEATHER (The "Jet Stream") ---
-    float wind_component_knots;// Positive = Tailwind, Negative = Headwind
-    float turbulence_index;    // 0.0 (Smooth) -> 1.0 (Severe / Divert)
-    bool is_icing_conditions;  // Affects lower altitudes
+    // Security Flags
+    bool is_conflict_zone;              // Conflict/Military Zones
+    bool is_closed;                     // Closed Airspace
 
-    // --- REGULATORY & RISK ---
-    bool etops_required;       // True if >60 min from an airport (Ocean crossing)
-    int etops_rating_minutes;  // e.g., 120, 180 (Required rating to fly this route)
-    bool is_conflict_zone;     // War zone / Missile threat (MH17 scenario)
-    bool is_closed;            // Complete airspace closure (Volcanic Ash / Politics)
+    // Calculated
+    float effective_ground_speed_kts;   // TAS +/- Wind
+    float estimated_fuel_burn_kg;       // Specific Fuel Consumption * Time
 
-    // --- OPERATIONAL METRICS ---
-    float effective_ground_speed_kts; // True Airspeed +/- Wind
-    float estimated_fuel_burn_kg;     // Burn varies massively with wind
-
-    // Constructor
     AirRoute(long long id, std::string name);
 
-    // Parses "airway", "ref", "min_altitude"
-    void parse_osm_tags();
-
-    // Calculates ground speed based on cruise speed (Mach 0.85) vs Wind
-    void update_metrics();
+    void parse_osm_tags();     
+    void update_metrics();    
+    
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
 };
 
 #endif

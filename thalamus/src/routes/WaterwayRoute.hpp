@@ -5,38 +5,35 @@
 
 class WaterwayRoute : public BaseRoute {
 public:
-    // --- PHYSICAL GEOMETRY ---
-    float max_draft_meters;    // Depth limit (critical for barge loading)
-    float air_draft_meters;    // Bridge clearance (critical for container stacking)
-    float beam_meters;         // Lock width limit
-    std::string cemt_class;    // European Standard (I - VII)
-    
-    // --- HYDROLOGY (Dynamic) ---
-    float current_speed_kmh;   // Flow rate (positive = downstream)
-    float water_level_stage;   // Deviation from normal (e.g., -1.5m drought)
-    bool is_frozen;            // Winter stoppage
+    // --- PHYSICAL CONSTRAINTS (Static) ---
+    float max_draft_meters;        // Channel depth (limiting factor)
+    float max_air_draft_meters;    // Bridge clearance (limits container stacks)
+    float channel_width_meters;    // Limits two-way traffic for wide barges
+    int cemt_class;                // European standard (I-VII) determining vessel size
+    int lock_count;                // Number of locks on this segment
 
-    // --- NAVIGABILITY & RISK ---
-    // 0=Open, 1=Restricted (Light loading only), 2=One-Way, 3=Closed
-    int navigability_status;   
+    // --- DYNAMIC CONDITIONS (Hydrology) ---
+    float current_speed_knots;     // +Downstream, -Upstream
+    float water_level_offset_m;    // Flood (+) or Drought (-) affecting draft
+    bool is_frozen;                // Winter blockage
     
-    // 0=Safe, ... 5=Conflict Zone / Dam Failure Risk
-    int threat_level;          
-    std::string hazard_type;   // "drought", "ice", "debris", "civil_unrest", "maintenance"
-
-    // --- OPERATIONAL ---
-    bool is_canal;             // True = Still water, False = Flowing River
-    float upstream_speed_kmh;  // Effective speed fighting current
-    float downstream_speed_kmh;// Effective speed with current
+    // --- OPERATIONAL METRICS (Calculated) ---
+    float effective_draft_meters;  // Actual usable depth right now
+    float max_deadweight_tons;     // Max cargo capacity per barge
+    float effective_sog_knots;     // Speed Over Ground (Vessel +/- Current)
+    float lock_penalty_hours;      // Total time lost to locking
+    float travel_time_hours;       // (Dist / SOG) + Lock Penalty
 
     // Constructor
     WaterwayRoute(long long id, std::string name);
 
-    // Parses "CEMT", "waterway=river", "maxdraft", "seamark:bridge:clearance"
-    void parse_osm_tags();
-
-    // Calculates speeds based on current vs engine power
-    void update_metrics();
+    // --- INTERFACE IMPLEMENTATION ---
+    void parse_osm_tags();     // Parses CEMT, depth, bridges
+    void update_metrics();     // Calculates SOG and Lock Delays
+    
+    // Strict Overrides
+    void process_packet(const json& sig) override;
+    json get_json_state() const override;
 };
 
 #endif

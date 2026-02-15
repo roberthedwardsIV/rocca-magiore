@@ -3,121 +3,197 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+    // --- INLAND WATERWAY PHYSICS ---
+    constexpr float STANDARD_BARGE_SPEED_KNOTS = 6.0f;  // Typical convoy speed
+    constexpr float LOCK_CYCLE_TIME_MINUTES = 45.0f;    // Avg time to fill/empty + approach
+    constexpr float DRAFT_BUFFER_METERS = 0.5f;         // Under-keel clearance required for safety
+    
+    // CEMT Class Capacities (Tonnage)
+    // Class I (Spits): ~300t
+    // Class IV (RHK): ~1500t
+    // Class Vb (Jowi): ~4000t
+    // Class VIb (Convoy): ~12000t
+    constexpr float CAP_CLASS_I = 300.0f;
+    constexpr float CAP_CLASS_IV = 1500.0f;
+    constexpr float CAP_CLASS_V = 4000.0f;
+    constexpr float CAP_CLASS_VI = 12000.0f;
+}
+
+// Constructor for initialization
 WaterwayRoute::WaterwayRoute(long long id, std::string name)
     : BaseRoute(id, name, "waterway") {
     
-    // Default Physical Geometry (Small River / Feeder Canal)
-    max_draft_meters = 2.5f;   // Standard barge draft
-    air_draft_meters = 7.0f;   // Bridge clearance (2 container stack)
-    beam_meters = 9.5f;        // Lock width (Freyssinet gauge)
-    cemt_class = "IV";         // Standard European waterway
+    // Default Geometry (Standard Canal)
+    max_draft_meters = 3.0f;       
+    max_air_draft_meters = 7.0f;   
+    channel_width_meters = 20.0f;
+    cemt_class = 4;                // Class IV (Standard Europe)
+    lock_count = 0;
 
-    // Default Hydrology (Normal Flow)
-    current_speed_kmh = 3.0f;  // Gentle current
-    water_level_stage = 0.0f;  // Normal pool
+    // Default Hydrology
+    current_speed_knots = 0.0f;    // Canal (Still water)
+    water_level_offset_m = 0.0f;   // Normal pool
     is_frozen = false;
-    is_canal = false;
 
-    // Default Navigability
-    navigability_status = 0;   // Open
-    threat_level = 0;          // Safe
-    hazard_type = "none";
-
-    // Operational defaults
-    upstream_speed_kmh = 8.0f;
-    downstream_speed_kmh = 14.0f;
+    // Calculated Metrics
+    effective_draft_meters = 2.5f;
+    max_deadweight_tons = CAP_CLASS_IV;
+    effective_sog_knots = STANDARD_BARGE_SPEED_KNOTS;
+    lock_penalty_hours = 0.0f;
+    travel_time_hours = 0.0f;
 }
 
+
+// Direct updates to static fields from OSM tags
 void WaterwayRoute::parse_osm_tags() {
-    // 1. Waterway Type (River vs Canal)
-    if (tags.count("waterway")) {
-        std::string type = tags["waterway"];
-        is_canal = (type == "canal" || type == "drain" || type == "ditch");
-        if (is_canal) current_speed_kmh = 0.0f; // Canals have negligible current
+    // 1. CEMT CLASS (The primary capacity designator)
+    if (tags.count("CEMT")) {
+        std::string c = tags["CEMT"];
+        // Roman numerals to int conversion (simplified)
+        if (c.find("VI") != std::string::npos) cemt_class = 6;
+        else if (c.find("V") != std::string::npos) cemt_class = 5;
+        else if (c.find("IV") != std::string::npos) cemt_class = 4;
+        else if (c.find("III") != std::string::npos) cemt_class = 3;
+        else cemt_class = 1;
     }
 
-    // 2. CEMT Classification (The "Standard" sizes)
-    // This overrides manual dimensions unless they are explicitly set.
-    if (tags.count("CEMT")) {
-        cemt_class = tags["CEMT"];
-        // Approximate dimensions based on CEMT standards
-        if (cemt_class == "I") {          // Peniche (Spit)
-            max_draft_meters = 1.8f; beam_meters = 5.0f; air_draft_meters = 4.0f;
-        } else if (cemt_class == "II") {  // Kampine
-            max_draft_meters = 2.5f; beam_meters = 6.6f; air_draft_meters = 5.0f;
-        } else if (cemt_class == "III") { // Dortmund-Ems
-            max_draft_meters = 2.5f; beam_meters = 8.2f; air_draft_meters = 6.0f;
-        } else if (cemt_class == "IV") {  // Rhine-Herne (Europaschiff)
-            max_draft_meters = 2.5f; beam_meters = 9.5f; air_draft_meters = 7.0f;
-        } else if (cemt_class == "Va") {  // Large Rhine
-            max_draft_meters = 2.8f; beam_meters = 11.4f; air_draft_meters = 9.1f;
-        } else if (cemt_class == "Vb") {  // Large Rhine (Convoy)
-            max_draft_meters = 2.8f; beam_meters = 11.4f; air_draft_meters = 9.1f;
-        } else if (cemt_class.find("VI") != std::string::npos) { // Arterial
-            max_draft_meters = 4.5f; beam_meters = 22.8f; air_draft_meters = 9.1f;
+    // 2. DIMENSIONS
+    if (tags.count("maxdraft") || tags.count("depth")) {
+        try { 
+            std::string d = tags.count("maxdraft") ? tags["maxdraft"] : tags["depth"];
+            max_draft_meters = std::stof(d); 
+        } catch (...) { max_draft_meters = 3.0f; }
+    }
+
+    if (tags.count("maxheight") || tags.count("bridge:height")) {
+        try { 
+            std::string h = tags.count("maxheight") ? tags["maxheight"] : tags["bridge:height"];
+            max_air_draft_meters = std::stof(h); 
+        } catch (...) { max_air_draft_meters = 7.0f; }
+    }
+
+    // 3. INFRASTRUCTURE (Locks)
+    // OSM often marks locks as nodes, but ways can have "lock=yes" or "lock_name"
+    if (tags.count("lock") && tags["lock"] == "yes") {
+        lock_count = 1; // Default to at least 1 if tagged
+    }
+
+    // 4. FLOW TYPE
+    if (tags.count("waterway")) {
+        if (tags["waterway"] == "river") {
+            // Rivers usually have current
+            current_speed_knots = 2.0f; // Default downstream assumption
+        } else if (tags["waterway"] == "canal") {
+            current_speed_knots = 0.0f; // Still water
+        }
+    }
+    
+    update_metrics();
+}
+
+
+// Updates to dynamic + calculated fields from Thalamus signaling
+void WaterwayRoute::update_metrics() {
+    // ---- 1. Draft & Capacity Calculation ----
+    // Actual Depth = Chart Datum + Water Level Offset
+    float actual_depth = max_draft_meters + water_level_offset_m;
+    
+    // Usable Draft = Actual - Safety Buffer
+    effective_draft_meters = std::max(0.0f, actual_depth - DRAFT_BUFFER_METERS);
+    
+    // Light-Loading Logic:
+    // If effective draft is less than design draft, capacity drops linearly.
+    // Design draft approx: Class I (2m), Class IV (2.5m), Class V (3m)
+    float design_draft = 2.5f; 
+    if (effective_draft_meters < design_draft) {
+        float load_factor = effective_draft_meters / design_draft;
+        // Capacity penalty is severe (exponential) as fixed weight of barge eats buoyancy
+        load_factor = std::pow(load_factor, 1.5f);
+        
+        // Base tonnage on CEMT class
+        float base_cap = CAP_CLASS_IV;
+        if (cemt_class >= 6) base_cap = CAP_CLASS_VI;
+        else if (cemt_class == 5) base_cap = CAP_CLASS_V;
+        else if (cemt_class <= 2) base_cap = CAP_CLASS_I;
+        
+        max_deadweight_tons = base_cap * load_factor;
+    }
+
+    // ---- 2. Speed Over Ground (Hydrology) ----
+    // SOG = Vessel Speed + Current Vector
+    // If current is negative (upstream), we subtract.
+    effective_sog_knots = STANDARD_BARGE_SPEED_KNOTS + current_speed_knots;
+    
+    // If upstream current > vessel speed, we are stationary/sliding back
+    if (effective_sog_knots < 0.5f) effective_sog_knots = 0.1f; // Crawling/Stalled
+
+    if (is_frozen) {
+        effective_sog_knots = 0.0f;
+        max_deadweight_tons = 0.0f;
+    }
+
+    // ---- 3. Latency (Lock Penalties) ----
+    // Time = (Distance / Speed) + (Locks * CycleTime)
+    lock_penalty_hours = (lock_count * LOCK_CYCLE_TIME_MINUTES) / 60.0f;
+    
+    if (get_length_km() > 0 && effective_sog_knots > 0.1f) {
+        // km to nm
+        float dist_nm = get_length_km() * 0.539957f;
+        float transit_time = dist_nm / effective_sog_knots;
+        travel_time_hours = transit_time + lock_penalty_hours;
+    } else {
+        travel_time_hours = 9999.0f; // Blocked
+    }
+}
+
+
+// Main signal routing function
+void WaterwayRoute::process_packet(const json& sig) {
+    std::lock_guard<std::mutex> lock(route_mutex);
+    std::string category = sig.value("category", "none");
+
+    // Hydrology (Levels & Flow)
+    if (category == "hydrology" || category == "water_level") {
+        if (sig.contains("level_offset_m")) {
+            water_level_offset_m = sig["level_offset_m"].get<float>();
+        }
+        if (sig.contains("current_speed_kts")) {
+            current_speed_knots = sig["current_speed_kts"].get<float>();
+        }
+        if (sig.contains("ice")) {
+            is_frozen = sig["ice"].get<bool>();
         }
     }
 
-    // 3. Explicit Overrides (Map data beats standards)
-    if (tags.count("maxdraft")) {
-        try { max_draft_meters = std::stof(tags["maxdraft"]); } catch(...) {}
-    }
-    if (tags.count("maxheight")) { // Bridge clearance
-        try { air_draft_meters = std::stof(tags["maxheight"]); } catch(...) {}
+    // Infrastructure (Lock Status)
+    else if (category == "lock" || category == "infrastructure") {
+        // If locks are broken, penalty becomes infinite
+        bool operational = sig.value("operational", true);
+        if (!operational) {
+            // Hack to represent closure via time penalty
+            lock_penalty_hours = 999.0f; 
+        }
     }
 
-    // 4. Hazards (Dams, Locks, Rapids)
-    if (tags.count("lock") || tags.count("weir")) {
-        // These are points, usually handled by ChokePoints, 
-        // but if tagged on a way, it implies restriction.
-        navigability_status = 1; // Restricted speed
-    }
+    last_update = sig.value("timestamp", 0LL);
+    update_metrics();
 }
 
-void WaterwayRoute::update_metrics() {
-    // 1. Effective Draft (Drought Calculation)
-    // If the river is low (-1.5m), the available draft shrinks.
-    // e.g., 2.5m normal draft - 1.5m low water = 1.0m actual.
-    float effective_draft = max_draft_meters + water_level_stage;
-    
-    if (effective_draft < 1.0f) {
-        navigability_status = 3; // Closed (Too shallow for commercial barges)
-        hazard_type = "drought";
-    } else if (effective_draft < 2.0f) {
-        navigability_status = 1; // Light-loading only (Can't fill the barge)
-        hazard_type = "low_water";
-    }
 
-    // 2. Ice Status
-    if (is_frozen) {
-        navigability_status = 3;
-        hazard_type = "ice";
-        upstream_speed_kmh = 0.0f;
-        downstream_speed_kmh = 0.0f;
-        return; // Route is dead
-    }
-
-    // 3. Current vs Engine Power
-    // Standard Barge Engine Speed ~12-15 km/h relative to water.
-    float engine_speed = 13.0f; 
-
-    // Downstream: Engine + Current
-    downstream_speed_kmh = engine_speed + current_speed_kmh;
-    
-    // Upstream: Engine - Current
-    // If current is too strong (flooding), upstream travel becomes impossible.
-    upstream_speed_kmh = engine_speed - current_speed_kmh;
-
-    if (upstream_speed_kmh < 1.0f) {
-        upstream_speed_kmh = 0.0f; // Current is too strong to navigate against
-        hazard_type = "flood_current";
-    }
-
-    // 4. Civil Unrest / Blockade
-    if (threat_level >= 5) {
-        navigability_status = 3;
-        hazard_type = "blockade";
-        upstream_speed_kmh = 0.0f;
-        downstream_speed_kmh = 0.0f;
-    }
+// JSON packager for archival
+json WaterwayRoute::get_json_state() const {
+    std::lock_guard<std::mutex> lock(route_mutex);
+    return {
+        {"id", osm_id},
+        {"type", type},
+        {"cemt_class", cemt_class},
+        {"max_tonnage", max_deadweight_tons},
+        {"effective_draft", effective_draft_meters},
+        {"sog_knots", effective_sog_knots},
+        {"current_knots", current_speed_knots},
+        {"lock_penalty_h", lock_penalty_hours},
+        {"travel_time_h", travel_time_hours},
+        {"last_update", last_update}
+    };
 }
