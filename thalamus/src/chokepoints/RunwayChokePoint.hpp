@@ -5,29 +5,44 @@
 
 class RunwayChokePoint : public BaseChokePoint {
 public:
-    // --- PHYSICAL DIMENSIONS ---
-    float length_meters;       // Determines max takeoff weight for heavy freighters
+    // --- PHYSICAL DIMENSIONS (Static) ---
+    float length_meters;       // Takeoff Run Available (TORA)
     float width_meters;
-    std::string surface_type;  // "asphalt", "concrete", "grass", "gravel"
-    
+    std::string surface_type;  // "asphalt", "concrete"
+
     // --- DYNAMIC STATE ---
-    float visibility_meters;   // Fog/Snow limit (METAR RVR)
-    float friction_coefficient;// Braking action (0.0 = Ice, 0.8 = Dry)
-    float crosswind_speed_kt;  // Crosswind component
-    bool is_obstructed;        // Crash, debris, or stalled aircraft
-    bool is_maintenance;       // Scheduled resurfacing
+    float visibility_meters;   // RVR (Runway Visual Range)
+    float friction_coefficient;// Mu (0.0 - 1.0)
+    float crosswind_speed_kt;  // Lateral wind component
+    float headwind_speed_kt;   // Longitudinal wind component (+Head, -Tail)
+    
+    // --- OPERATIONAL FLAGS ---
+    bool is_obstructed;        // FOD / Disabled Aircraft
+    bool is_maintenance;       // Resurfacing
+
+    // --- CALCULATED METRICS ---
+    float current_capacity_ph; // Movements per hour (Arrivals + Departures)
+    float design_capacity_ph;  // Max capacity in VMC (Visual Meteorological Conditions)
+    float dynamic_crosswind_limit_kt; // Calculated limit based on friction
 
     // Constructor
     RunwayChokePoint(int id, std::string name, double lat, double lon, 
                      float length, float width, std::string surface);
 
-    // Calculates flow based on Visibility + Friction + Crosswind
+    // --- INTERFACE IMPLEMENTATION ---
+    
+    // Calculates flow modifier as (Current Capacity / Design Capacity)
+    // Returns 0.0 if crosswind > limit or tailwind > limit
     float calculate_throughput_modifier() override;
 
-    // Listens for 'weather' (METAR data) and 'obstruction'
+    // Listens for 'weather' (METAR) and 'obstruction'
     void process_packet(const json& sig) override;
     
     json get_json_state() const override;
+
+private:
+    // Recalculates limits based on friction and visibility rules
+    void update_aero_physics();
 };
 
 #endif

@@ -3,6 +3,32 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+    // --- AVIATION PHYSICS CONSTANTS ---
+    
+    // Capacity Baselines (Single Runway Movements per Hour)
+    // Derived from standard separation minima (3nm radar vs 10nm LVP)
+    constexpr float CAP_VMC_OPTIMAL = 48.0f; // Visual conditions
+    constexpr float CAP_IMC_CAT1 = 24.0f;    // Instrument conditions
+    constexpr float CAP_LVP_CAT3 = 12.0f;    // Low Visibility Procedures
+    
+    // Visibility Thresholds (Meters RVR)
+    constexpr float VIS_VMC_MIN = 5000.0f;
+    constexpr float VIS_CAT1_MIN = 550.0f;   // ILS Cat I decision height
+    constexpr float VIS_CAT3_MIN = 75.0f;    // ILS Cat III
+    
+    // Friction Coefficients (Mu)
+    constexpr float MU_DRY = 0.8f;
+    constexpr float MU_WET = 0.5f;
+    constexpr float MU_ICE = 0.2f;
+    
+    // Aircraft Certification Limits (Generic Transport Category)
+    constexpr float LIMIT_CROSSWIND_DRY = 35.0f; // Knots
+    constexpr float LIMIT_CROSSWIND_WET = 25.0f;
+    constexpr float LIMIT_CROSSWIND_ICE = 15.0f;
+    constexpr float LIMIT_TAILWIND = 10.0f;      // Knots
+}
+
 RunwayChokePoint::RunwayChokePoint(int id, std::string name, double lat, double lon, 
                                    float length, float width, std::string surface)
     : BaseChokePoint(id, name, "runway", lat, lon), 
@@ -10,30 +36,32 @@ RunwayChokePoint::RunwayChokePoint(int id, std::string name, double lat, double 
       width_meters(width), 
       surface_type(surface) {
     
-    // Defaults (CAVOK - Ceiling and Visibility OK)
-    visibility_meters = 10000.0f; 
-    friction_coefficient = 0.8f;   // 0.8 = Dry Asphalt (Perfect)
+    // Defaults: CAVOK (Ceiling and Visibility OK)
+    visibility_meters = 9999.0f; 
+    friction_coefficient = MU_DRY;
     crosswind_speed_kt = 0.0f;
+    headwind_speed_kt = 0.0f;
     is_obstructed = false;
     is_maintenance = false;
+    
+    design_capacity_ph = CAP_VMC_OPTIMAL;
+    current_capacity_ph = CAP_VMC_OPTIMAL;
+    dynamic_crosswind_limit_kt = LIMIT_CROSSWIND_DRY;
 }
 
 void RunwayChokePoint::process_packet(const json& sig) {
     std::lock_guard<std::mutex> lock(choke_mutex);
     std::string category = sig.value("category", "none");
 
-    // 1. Weather Signal (METAR - METeorological Aerodrome Report)
+    // 1. Weather Signal (METAR)
     if (category == "weather") {
-        if (sig.contains("visibility")) {
-            visibility_meters = sig["visibility"].get<float>();
-        }
-        if (sig.contains("friction") || sig.contains("braking_action")) {
-            // 0.8=Dry, 0.4=Wet, 0.2=Icy/Snow
-            friction_coefficient = sig.value("friction", 0.8f);
-        }
-        if (sig.contains("crosswind")) {
-            crosswind_speed_kt = sig["crosswind"].get<float>();
-        }
+        if (sig.contains("visibility")) visibility_meters = sig["visibility"].get<float>();
+        if (sig.contains("friction")) friction_coefficient = sig["friction"].get<float>();
+        
+        // Wind vectors
+        if (sig.contains("crosswind")) crosswind_speed_kt = std::abs(sig["crosswind"].get<float>());
+        if (sig.contains("headwind")) headwind_speed_kt = sig["headwind"].get<float>();
+        // Note: Negative headwind = tailwind
     }
     
     // 2. Obstruction (Crash / Disabled Aircraft)
@@ -41,51 +69,71 @@ void RunwayChokePoint::process_packet(const json& sig) {
         is_obstructed = sig.value("active", true);
     }
 
-    // 3. Maintenance (Resurfacing / Rubber Removal)
+    // 3. Maintenance (Resurfacing)
     else if (category == "maintenance") {
         is_maintenance = sig.value("active", true);
     }
 
     last_update = sig.value("timestamp", 0LL);
+    update_aero_physics();
+}
+
+void RunwayChokePoint::update_aero_physics() {
+    // --- 1. Calculate Dynamic Crosswind Limit ---
+    // Interpolate limit based on friction (Mu)
+    if (friction_coefficient >= MU_WET) {
+        // Linear scaling between Dry (0.8) and Wet (0.5)
+        float ratio = (friction_coefficient - MU_WET) / (MU_DRY - MU_WET);
+        dynamic_crosswind_limit_kt = LIMIT_CROSSWIND_WET + ratio * (LIMIT_CROSSWIND_DRY - LIMIT_CROSSWIND_WET);
+    } else {
+        // Linear scaling between Wet (0.5) and Ice (0.2)
+        float ratio = std::max(0.0f, (friction_coefficient - MU_ICE) / (MU_WET - MU_ICE));
+        dynamic_crosswind_limit_kt = LIMIT_CROSSWIND_ICE + ratio * (LIMIT_CROSSWIND_WET - LIMIT_CROSSWIND_ICE);
+    }
+
+    // --- 2. Calculate Operational Capacity (Flow Rate) ---
+    if (is_obstructed || is_maintenance) {
+        current_capacity_ph = 0.0f;
+        return;
+    }
+
+    // A. Wind Gate (Binary Safety Check)
+    if (crosswind_speed_kt > dynamic_crosswind_limit_kt) {
+        current_capacity_ph = 0.0f; // Winded off
+        return;
+    }
+    if (headwind_speed_kt < -LIMIT_TAILWIND) {
+        current_capacity_ph = 0.0f; // Wrong runway direction / too strong tailwind
+        return;
+    }
+
+    // B. Visibility Gate (Separation Standards)
+    float vis_capacity = CAP_VMC_OPTIMAL;
+    if (visibility_meters < VIS_CAT3_MIN) {
+        vis_capacity = 0.0f; // Below minima
+    } else if (visibility_meters < VIS_CAT1_MIN) {
+        vis_capacity = CAP_LVP_CAT3; // Massive separation required
+    } else if (visibility_meters < VIS_VMC_MIN) {
+        vis_capacity = CAP_IMC_CAT1; // Radar separation
+    }
+
+    // C. Braking Action Penalty
+    // If friction is low, Runway Occupancy Time (ROT) increases because planes can't brake hard.
+    // ROT increase = Capacity decrease.
+    float braking_efficiency = 1.0f;
+    if (friction_coefficient < MU_WET) {
+        // Simple physics model: Braking dist proportional to 1/friction
+        // Efficiency scales down.
+        braking_efficiency = std::max(0.5f, friction_coefficient / MU_DRY);
+    }
+
+    current_capacity_ph = vis_capacity * braking_efficiency;
 }
 
 float RunwayChokePoint::calculate_throughput_modifier() {
     std::lock_guard<std::mutex> lock(choke_mutex);
-
-    // 1. Hard Closures
-    if (is_obstructed) return 0.0f;
-    if (is_maintenance) return 0.0f;
-
-    // 2. Crosswind Constraints
-    // Heavy freighters (747-8F) limit is usually 30-35kt crosswind.
-    // If friction is poor (ice), the limit drops to 15kt or less.
-    float wind_limit = 35.0f * friction_coefficient; 
-    if (crosswind_speed_kt > wind_limit) return 0.0f;
-
-    // 3. Visibility Constraints (LVP - Low Visibility Procedures)
-    // CAT I: Vis > 550m (Standard Ops)
-    // CAT II: Vis > 300m (Reduced rate)
-    // CAT III: Vis < 300m (Severe spacing required)
-    
-    float vis_factor = 1.0f;
-    if (visibility_meters < 200.0f) {
-        return 0.0f; // Effectively closed for commercial ops
-    } 
-    else if (visibility_meters < 550.0f) {
-        // CAT II/III: Spacing increases massively to protect ILS signals
-        vis_factor = 0.25f; 
-    }
-    else if (visibility_meters < 1200.0f) {
-        // Marginal VFR / IFR: Slight reduction
-        vis_factor = 0.7f;
-    }
-
-    // 4. Braking Action (Friction)
-    // If friction is nil (ice), throughput is zero.
-    // If friction is poor (rain/slush), braking distance increases -> lower frequency.
-    float friction_factor = std::clamp(friction_coefficient / 0.8f, 0.1f, 1.0f);
-
-    return vis_factor * friction_factor;
+    // Modifier is simply the ratio of Current Capacity to Design Capacity
+    return current_capacity_ph / design_capacity_ph;
 }
 
 json RunwayChokePoint::get_json_state() const {
@@ -94,15 +142,15 @@ json RunwayChokePoint::get_json_state() const {
         {"id", id},
         {"type", entity_type},
         {"name", name},
-        {"status", {
-            {"visibility", visibility_meters},
+        {"physics", {
+            {"crosswind_kt", crosswind_speed_kt},
+            {"limit_kt", dynamic_crosswind_limit_kt},
             {"friction", friction_coefficient},
-            {"crosswind", crosswind_speed_kt},
-            {"obstructed", is_obstructed}
+            {"visibility_m", visibility_meters}
         }},
-        {"limits", {
-            {"length", length_meters},
-            {"surface", surface_type}
+        {"capacity", {
+            {"current_ph", current_capacity_ph},
+            {"design_ph", design_capacity_ph}
         }},
         {"throughput_mod", const_cast<RunwayChokePoint*>(this)->calculate_throughput_modifier()}
     };

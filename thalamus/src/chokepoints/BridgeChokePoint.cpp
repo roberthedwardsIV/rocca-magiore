@@ -3,57 +3,110 @@
 #include <algorithm>
 #include <cmath>
 
-// Constructor
+namespace {
+    // --- PHYSICS CONSTANTS ---
+    constexpr float RHO_AIR_DEFAULT = 1.225f; // kg/m^3 at sea level
+    constexpr float GRAVITY = 9.81f;          // m/s^2
+    
+    // Truck parameters for Overturning Calculation
+    // Standard Semi-Trailer
+    constexpr float TRUCK_MASS_KG = 15000.0f; // Lightly loaded (worst case for tipping)
+    constexpr float TRUCK_SIDE_AREA = 35.0f;  // m^2
+    constexpr float TRUCK_WIDTH = 2.5f;       // m
+    constexpr float TRUCK_CG_HEIGHT = 1.8f;   // m (Center of Gravity)
+    constexpr float TRUCK_DRAG_COEFF = 1.3f;  // Cd for a boxy trailer side
+    
+    // Bridge Structural Constants
+    // Empirically, mass scales with span squared for long bridges
+    constexpr float BRIDGE_MASS_FACTOR = 15000.0f; // kg/m linear mass estimate
+}
+
 BridgeChokePoint::BridgeChokePoint(int id, std::string name, double lat, double lon, 
-                                   float weight_lim, float length, float clearance)
+                                   float span, float width, float height)
     : BaseChokePoint(id, name, "bridge", lat, lon), 
-      max_weight_tons(weight_lim), 
-      length_meters(length), 
-      clearance_height_meters(clearance) {
+      span_length_m(span), 
+      deck_width_m(width), 
+      clearance_height_m(height) {
     
-    // --- PHYSICS LOGIC ---
-    // Calculate the safe wind threshold based on geometry.
-    // Base Safe Speed: 120 km/h (Hurricane force start)
-    float base_limit = 120.0f; 
-
-    // Penalty 1: Height (Wind shear increases with altitude)
-    // -0.5 km/h for every meter of clearance above 10m
-    float height_penalty = std::max(0.0f, (clearance_height_meters - 10.0f) * 0.5f);
-
-    // Penalty 2: Span Length (Oscillation risk)
-    // -1.0 km/h for every 100m of length
-    float length_penalty = (length_meters / 100.0f) * 1.0f;
-
-    max_wind_speed_kmh = std::max(60.0f, base_limit - height_penalty - length_penalty);
+    max_load_tons = 100.0f; // Default
     
-    // Initialize State
+    // State Defaults
+    current_wind_speed_ms = 0.0f;
+    air_density_kgm3 = RHO_AIR_DEFAULT;
     structural_health = 1.0f;
-    current_wind_speed = 0.0f;
-    is_maintenance_active = false;
+    is_maintenance = false;
+
+    update_physics_limits();
+}
+
+void BridgeChokePoint::update_physics_limits() {
+    // 1. Natural Frequency Estimation ($f_n$)
+    // Fundamental frequency drops as span length increases.
+    // Empirical approximation: f ~ 100 / L (Hz)
+    // We scale by sqrt(structural_health) because stiffness ($k$) drops with damage ($\omega = \sqrt{k/m}$)
+    if (span_length_m > 0) {
+        natural_freq_hz = (100.0f / span_length_m) * std::sqrt(structural_health);
+    } else {
+        natural_freq_hz = 10.0f; // Stiff/Short bridge
+    }
+    float omega = 2.0f * M_PI * natural_freq_hz; // Angular frequency
+
+    // 2. Critical Flutter Velocity ($U_{cr}$) - Selberg Approximation
+    // U_cr = K * omega * Width
+    // K is a complex function of mass/radius ratio, simplified here to 2.5 for plate decks.
+    // Flutter is the point where aerodynamic damping becomes negative -> Collapse.
+    // Width ($B$) provides aerodynamic stability.
+    // Heuristic K factor for suspension bridges ~ 2.5 - 3.0
+    float flutter_coeff = 2.5f; 
+    critical_flutter_vel_ms = flutter_coeff * omega * deck_width_m;
+
+    // 3. Vehicle Overturning Velocity ($U_{tip}$)
+    // Moment Balance: Resisting (Gravity) vs Overturning (Wind)
+    // M_resist = Mass * g * (Width/2)
+    // M_wind = Force * Height_CG = (0.5 * rho * v^2 * Cd * Area) * Height_CG
+    // Solve for v:
+    float resisting_moment = TRUCK_MASS_KG * GRAVITY * (TRUCK_WIDTH / 2.0f);
+    float wind_force_const = 0.5f * air_density_kgm3 * TRUCK_DRAG_COEFF * TRUCK_SIDE_AREA * TRUCK_CG_HEIGHT;
+    
+    if (wind_force_const > 0.001f) {
+        vehicle_overturn_vel_ms = std::sqrt(resisting_moment / wind_force_const);
+    } else {
+        vehicle_overturn_vel_ms = 999.0f;
+    }
 }
 
 void BridgeChokePoint::process_packet(const json& sig) {
     std::lock_guard<std::mutex> lock(choke_mutex);
     std::string category = sig.value("category", "none");
 
-    // 1. Weather Signal (Real-time Wind)
+    // Weather Signal (Wind & Density)
     if (category == "weather") {
-        if (sig.contains("wind_speed")) {
-            current_wind_speed = sig["wind_speed"].get<float>();
+        if (sig.contains("wind_speed_ms")) {
+            current_wind_speed_ms = sig["wind_speed_ms"].get<float>();
+        }
+        if (sig.contains("temp_c")) {
+            // Adjust air density: rho = P / (R * T)
+            // Simplified: rho_new = rho_std * (288 / (273 + T))
+            float temp_c = sig["temp_c"].get<float>();
+            air_density_kgm3 = RHO_AIR_DEFAULT * (288.15f / (273.15f + temp_c));
+            // Recalc physics because density changed
+            update_physics_limits();
         }
     }
     
-    // 2. Seismic/Integrity Signal
+    // Seismic/Integrity Signal (Stiffness Loss)
     else if (category == "integrity" || category == "seismic") {
-        float severity = sig.value("severity", 0.0f);
-        // Bridges are rigid structures; damage accumulates and requires repair
-        structural_health -= severity;
-        if (structural_health < 0.0f) structural_health = 0.0f;
+        float damage = sig.value("severity", 0.0f);
+        structural_health -= damage;
+        if (structural_health < 0.1f) structural_health = 0.1f; // Prevent div/0 or negative roots
+        
+        // Damage reduces stiffness, which lowers natural frequency and flutter limit
+        update_physics_limits();
     }
 
-    // 3. Maintenance/Closure Signal
+    // Maintenance
     else if (category == "maintenance") {
-        is_maintenance_active = sig.value("active", false);
+        is_maintenance = sig.value("active", false);
     }
 
     last_update = sig.value("timestamp", 0LL);
@@ -62,21 +115,35 @@ void BridgeChokePoint::process_packet(const json& sig) {
 float BridgeChokePoint::calculate_throughput_modifier() {
     std::lock_guard<std::mutex> lock(choke_mutex);
 
-    // 1. Catastrophic Structural Failure
-    // If health is below 20%, the bridge is condemned/unsafe.
-    if (structural_health < 0.2f) return 0.0f;
+    // 1. Structural Failure Limit (Flutter)
+    // If wind speed exceeds critical flutter velocity, the bridge enters unstable oscillation.
+    // It is effectively closed/destroying itself.
+    if (current_wind_speed_ms > critical_flutter_vel_ms) {
+        return 0.0f; 
+    }
 
-    // 2. Weather Closure (Binary Gate)
-    // If wind exceeds our calculated physical limit, traffic stops.
-    if (current_wind_speed > max_wind_speed_kmh) return 0.0f;
+    // 2. Traffic Safety Limit (Overturning)
+    // If wind speed allows trucks to tip over, we ban high-profile vehicles (Logistics stop).
+    // Cars might still pass, but commercial throughput drops to near zero.
+    if (current_wind_speed_ms > vehicle_overturn_vel_ms) {
+        return 0.0f; // Trucks banned
+    }
 
-    // 3. Maintenance Throttle
-    // Maintenance usually closes lanes, reducing flow to 50%
-    if (is_maintenance_active) return 0.5f;
+    // 3. Operational Throttle (Safety Buffer)
+    // As wind approaches the tipping point, speed limits are reduced linearly.
+    // Start throttling at 70% of tip speed.
+    float wind_throttle = 1.0f;
+    float safety_ratio = current_wind_speed_ms / vehicle_overturn_vel_ms;
+    
+    if (safety_ratio > 0.7f) {
+        // Linearly reduce flow from 100% to 0% as we approach the limit
+        wind_throttle = 1.0f - ((safety_ratio - 0.7f) / 0.3f);
+    }
 
-    // 4. Standard Operation
-    // Flow is scaled by structural health (potholes/cracks slow traffic)
-    return structural_health;
+    // 4. Maintenance / Health
+    float maint_factor = is_maintenance ? 0.5f : 1.0f;
+    
+    return structural_health * wind_throttle * maint_factor;
 }
 
 json BridgeChokePoint::get_json_state() const {
@@ -85,16 +152,18 @@ json BridgeChokePoint::get_json_state() const {
         {"id", id},
         {"type", entity_type},
         {"name", name},
-        {"health", structural_health},
-        {"wind_speed", current_wind_speed},
-        {"wind_limit", max_wind_speed_kmh},
-        {"dims", {
-            {"len", length_meters},
-            {"height", clearance_height_meters},
-            {"weight_cap", max_weight_tons}
+        {"geometry", {
+            {"span_m", span_length_m},
+            {"width_m", deck_width_m},
+            {"height_m", clearance_height_m}
         }},
-        {"is_closed", (current_wind_speed > max_wind_speed_kmh)},
-        // Use const_cast to call non-const method inside const function (or make calc const)
+        {"physics", {
+            {"natural_freq_hz", natural_freq_hz},
+            {"flutter_limit_ms", critical_flutter_vel_ms},
+            {"overturn_limit_ms", vehicle_overturn_vel_ms},
+            {"current_wind_ms", current_wind_speed_ms}
+        }},
+        {"health", structural_health},
         {"throughput_mod", const_cast<BridgeChokePoint*>(this)->calculate_throughput_modifier()}
     };
 }

@@ -36,4 +36,4 @@ protected:
     long long last_update;
 };
 
-#endif // BASE_CHOKEPOINT_HPP
+#endif // BASE_CHOKEPOINT_HPP 

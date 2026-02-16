@@ -5,29 +5,41 @@
 
 class BridgeChokePoint : public BaseChokePoint {
 public:
-    // --- PHYSICAL DIMENSIONS ---
-    float length_meters;           // Longer spans = higher oscillation risk
-    float clearance_height_meters; // Critical for maritime traffic underneath
-    
-    // --- STATIC CONSTRAINTS ---
-    float max_weight_tons;
-    float max_wind_speed_kmh;      // Calculated based on height/length
-    
+    // --- GEOMETRY (Static) ---
+    float span_length_m;       // Main span length (determines stiffness)
+    float deck_width_m;        // Aerodynamic chord length (B)
+    float clearance_height_m;  // Height above terrain (z)
+    float max_load_tons;       // Live load capacity
+
+    // --- STRUCTURAL PHYSICS (Derived) ---
+    float natural_freq_hz;         // Fundamental torsional frequency
+    float critical_flutter_vel_ms; // Selberg Speed ($U_{cr}$) - Structural Failure Limit
+    float vehicle_overturn_vel_ms; // Lateral Force Limit - Traffic Safety Limit
+
     // --- DYNAMIC STATE ---
-    float structural_health;       // 0.0 (Collapsed) -> 1.0 (Perfect)
-    float current_wind_speed;      // From weather signals
-    bool is_maintenance_active;
+    float current_wind_speed_ms;   // Local wind velocity ($U$)
+    float air_density_kgm3;        // $\rho$ (varies with temp/altitude)
+    float structural_health;       // 0.0 - 1.0 (Stiffness degradation)
+    bool is_maintenance;
 
-    // Updated Constructor
+    // Constructor
     BridgeChokePoint(int id, std::string name, double lat, double lon, 
-                     float weight_lim, float length, float clearance);
+                     float span, float width, float height);
 
-    // Calculates flow based on Wind + Health + Maintenance
+    // --- INTERFACE IMPLEMENTATION ---
+    
+    // Returns 0.0 if $U > U_{cr}$ (Collapse Risk) or $U > U_{tip}$ (Traffic Ban)
+    // Returns <1.0 based on structural health degradation
     float calculate_throughput_modifier() override;
 
-    // Standard Interface
+    // Listens for 'weather' (wind/temp) and 'seismic' (health)
     void process_packet(const json& sig) override;
+    
     json get_json_state() const override;
+
+private:
+    // Recalculates limits when Health or Geometry changes
+    void update_physics_limits();
 };
 
 #endif

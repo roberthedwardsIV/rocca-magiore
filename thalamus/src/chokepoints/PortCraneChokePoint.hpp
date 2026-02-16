@@ -5,28 +5,38 @@
 
 class PortCraneChokePoint : public BaseChokePoint {
 public:
-    // --- PHYSICAL CAPACITY ---
-    float max_swl_tons;        // Safe Working Load (e.g. 65t for twin-lift)
-    float outreach_meters;     // Reach (Panamax vs. Post-Panamax)
-    float wind_limit_kmh;      // Safety cutoff (usually ~72 km/h)
+    // --- PHYSICAL DIMENSIONS (Static) ---
+    float max_swl_tons;        // Safe Working Load (e.g., 65t)
+    float outreach_meters;     // Boom length (determines wind moment)
+    float hoist_speed_ms;      // Vertical speed
+    float trolley_speed_ms;    // Horizontal speed
 
     // --- DYNAMIC STATE ---
-    float current_wind_speed;  // Local anemometer reading
-    float hoist_efficiency;    // 1.0 (New) -> 0.5 (Aging/Slow)
-    bool is_operational;       // Breakdown status
-    bool is_in_use;            // Is it currently assigned to a ship?
+    float current_wind_speed_kmh; // Anemometer reading
+    float mechanical_health;      // 0.0 - 1.0 (Wear and tear)
+    bool is_operational;          // Maintenance/Breakdown
+    bool is_in_use;               // Active assignment
+
+    // --- CALCULATED LIMITS ---
+    float dynamic_wind_limit_kmh; // Calculated based on load aerodynamics
+    float cycle_time_seconds;     // Theoretical move time
 
     // Constructor
     PortCraneChokePoint(int id, std::string name, double lat, double lon, 
                         float swl, float outreach);
 
-    // Calculates Lifting Capacity (0.0 = Stowed/Winded Off)
+    // --- INTERFACE IMPLEMENTATION ---
+    
+    // Calculates efficiency (0.0 - 1.0) based on Wind vs Limit and Health
     float calculate_throughput_modifier() override;
 
-    // Listens for 'weather' (wind) and 'mechanical' (breakdown)
+    // Listens for 'weather' (wind), 'mechanical' (health), 'ops' (usage)
     void process_packet(const json& sig) override;
     
     json get_json_state() const override;
+
+private:
+    void update_physics_limits();
 };
 
 #endif

@@ -5,26 +5,41 @@
 
 class CanalLockChokePoint : public BaseChokePoint {
 public:
-    // --- PHYSICAL CONSTRAINTS ---
-    float max_draft_meters;    // Determines if a specific ship fits
-    float max_beam_meters;     // Width constraint (Panamax vs. NeoPanamax)
-    
+    // --- PHYSICAL GEOMETRY (Static) ---
+    float chamber_length_m;
+    float chamber_width_m;
+    float sill_depth_m;        // Maximum depth at chart datum
+    float lift_height_m;       // Vertical distance to lift/lower
+    float design_cycle_time_m; // Nominal time (Entry + Fill + Exit)
+
     // --- DYNAMIC STATE ---
-    float water_level;         // 0.0 (Dry/Drought) -> 1.0 (Optimal)
-    float mechanical_health;   // 0.0 (Broken Gates) -> 1.0 (Functional)
-    float queue_size;          // Number of ships waiting (Congestion)
-    
+    float water_level_offset_m; // Drought (-) or Flood (+) relative to datum
+    float fill_rate_m3s;        // Hydraulic pump/gravity flow rate
+    bool is_maintenance;        // Mechanical status
+
+    // --- CALCULATED METRICS ---
+    float current_usable_depth_m; // Depth - Safety Margin
+    float max_passable_tonnage;   // Deadweight tonnage of largest allowed ship
+    float design_max_tonnage;     // Deadweight tonnage of design ship
+
     // Constructor
     CanalLockChokePoint(int id, std::string name, double lat, double lon, 
-                        float max_draft, float max_beam);
+                        float length, float width, float depth);
 
-    // Calculates flow based on Water Levels + Mechanics
+    // --- INTERFACE IMPLEMENTATION ---
+    
+    // Calculates flow as (Current Max Tonnage / Design Max Tonnage) * Cycle Efficiency
+    // 0.0 if blocked, <1.0 if drought forces light-loading or smaller ships
     float calculate_throughput_modifier() override;
 
-    // Listens for 'environmental' (drought) and 'mechanical' signals
+    // Listens for 'hydrology' (water levels) and 'maintenance'
     void process_packet(const json& sig) override;
     
     json get_json_state() const override;
+
+private:
+    // Helper to estimate DWT from dimensions (Block Coefficient method)
+    float estimate_max_dwt(float draft_limit) const;
 };
 
 #endif
