@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CRITICAL: Force full height so h-screen works */
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #0a0b10; /* Match 'void' color to prevent white flashes */
+  overflow: hidden; /* Prevent scrollbars on the main window */
+}
+
+/* Custom Scrollbar for The Tape */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #14161f; 
+}
+::-webkit-scrollbar-thumb {
+  background: #374151; 
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00f2ea; 
+}
+
+/* MapLibre Overrides to fit our theme */
+.maplibregl-popup-content {
+  background: #14161f !important;
+  color: #e0e0e0 !important;
+  border: 1px solid #00f2ea !important;
+  font-family: 'JetBrains Mono', monospace;
+}
+.maplibregl-popup-tip {
+  border-top-color: #00f2ea !important;
+}

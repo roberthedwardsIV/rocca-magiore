@@ -131,6 +131,38 @@ services:
     networks:
         - rocco_net
 
+  # ------------------ Visual Cortex (Backend API & WebSocket Bridge) ------------------
+  visual_cortex_backend:
+    build: 
+      context: ./visual_cortex/backend
+    container_name: visual_cortex_backend
+    environment:
+      - REDIS_HOST=corpus_callosum
+      - DB_HOST=hippocampus
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+    depends_on:
+      - corpus_callosum
+      - hippocampus
+    networks:
+      - rocco_net
+    ports:
+      - "8000:8000"
+
+  # ------------------ Visual Cortex (Frontend UI) ------------------
+  visual_cortex_frontend:
+    build: 
+      context: ./visual_cortex/frontend
+    container_name: visual_cortex_frontend
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - visual_cortex_backend
+    networks:
+      - rocco_net
+    ports:
+      - "3000:3000"
+      
 volumes:
   postgres_data:
 
