@@ -4,58 +4,48 @@
 #include "BaseAsset.hpp"
 
 struct SmelterState {
-    // --- PHYSICAL STATE (The Sensors) ---
-    float furnace_temperature_k;   // VIIRS Signal (Target ~1400K)
-    float so2_emissions_tpd;       // Sentinel-5P (Activity proxy)
-    float acid_storage_fill_pct;   // Logistic constraint (0.0 - 1.0)
-    float power_grid_load;         // 0.0 - 1.0 (Grid stability)
-    float op_health;               // Calculated from above
+    float furnace_temperature_k;   
+    float so2_emissions_tpd;       
+    float acid_storage_fill_pct;   
+    float power_grid_load;         
+    float op_health;               
 
-    // --- OPERATIONAL METRICS ---
-    float nameplate_capacity_tpd;  // Max throughput
-    float current_throughput_tpd;  // Actual flow
-    float recovery_rate;           // % Metal recovered (e.g., 0.98)
+    float nameplate_capacity_tpd;  
+    float current_throughput_tpd;  
+    float recovery_rate;           
     
-    // --- FINANCIAL STATE (The Valuation) ---
-    // Market Inputs
-    float treatment_charges;       // TC ($/tonne concentrate)
-    float refining_charges;        // RC (cents/lb)
-    float acid_price;              // $/tonne (Byproduct credit)
-    float energy_cost_mwh;         // $/MWh
+    float treatment_charges;       
+    float refining_charges;        
+    float acid_price;              
+    float energy_cost_mwh;         
     
-    // Financials
     float revenue_annual;
     float opex_annual;
     float ebitda;
-    float base_multiple;           // EV/EBITDA target
-    float enterprise_value;        // THE SIGNAL TARGET
+    float base_multiple;           
+    float enterprise_value;        
     
-    // Risk/Valuation Factors
     float wacc;
-    float threat_level;            // From external events (quakes)
+    float threat_level;            
 
-    // Uncertainties (Kalman)
-    float unc_temp, unc_so2, unc_fin; 
-
+    float unc_temp, unc_so2, unc_fin;
     long long last_update;
 };
 
 class SmelterAsset : public BaseAsset {
 public:
     SmelterAsset(int id, std::string name);
-    
-    // Standard Interface
     void process_packet(const json& sig) override;
     json get_json_state() const override;
-    void update(long long current_time) override;
+    
+    void update(long long current_time); // Removed 'override'
 
 protected:
     SmelterState current_state;
     float process_noise;
     
-    // logic
     void apply_signal(const json& sig);
-    void recalculate_valuation(); // <--- The missing link
+    void recalculate_valuation();
 };
 
 #endif

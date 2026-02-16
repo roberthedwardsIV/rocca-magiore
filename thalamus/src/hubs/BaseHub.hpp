@@ -5,7 +5,7 @@
 #include <vector>
 #include <mutex>
 #include <unordered_map>
-#include "../../include/json.hpp" 
+#include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
@@ -16,7 +16,7 @@ public:
     std::string type;          
     double lat;
     double lon;
-    
+
     BaseHub(long long id, std::string n, std::string t, double latitude, double longitude) 
         : osm_id(id), name(n), type(t), lat(latitude), lon(longitude), last_update(0) {}
 
@@ -27,6 +27,9 @@ public:
     virtual void process_packet(const json& sig) = 0;
 
     virtual json get_json_state() const = 0;
+
+    // Virtual hook for complex hub logic (overridden by Smelter/Port)
+    virtual void update_status() {}
 
 protected:
     mutable std::mutex hub_mutex; 

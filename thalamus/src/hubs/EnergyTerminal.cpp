@@ -7,8 +7,8 @@ namespace {
     // --- ENERGY PHYSICS CONSTANTS ---
     
     // Densities
-    constexpr float DENSITY_LNG = 450.0f;       [cite_start]// kg/m3 (Liquid) [cite: 1230]
-    constexpr float DENSITY_CRUDE = 850.0f;     [cite_start]// kg/m3 [cite: 1230]
+    constexpr float DENSITY_LNG = 450.0f;       
+    constexpr float DENSITY_CRUDE = 850.0f;     
     
     // Conversion Factors
     constexpr float LNG_M3_TO_MMBTU = 23.0f;    // Approx

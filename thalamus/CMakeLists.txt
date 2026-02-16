@@ -27,7 +27,7 @@ add_executable(thalamus_engine
     src/Propagator.cpp
     src/Archiver.cpp
     src/DatabaseManager.cpp
-    
+
     src/events/EarthquakeTracker.cpp
     src/events/WildfireTracker.cpp  
     
@@ -49,6 +49,7 @@ add_executable(thalamus_engine
     src/hubs/DistributionHub.cpp
     src/hubs/PowerSubstationHub.cpp
     src/hubs/PowerPlantHub.cpp
+    src/hubs/EnergyTerminal.cpp
 
     src/chokepoints/BridgeChokePoint.cpp
     src/chokepoints/TunnelChokePoint.cpp

@@ -17,7 +17,9 @@ public:
     double latitude;
     double longitude;
 
-    BaseChokePoint(int id, std::string name, std::string type, double lat, double lon);
+    BaseChokePoint(int id, std::string name, std::string type, double lat, double lon) 
+        : id(id), name(name), entity_type(type), latitude(lat), longitude(lon), last_update(0) {}
+    
     virtual ~BaseChokePoint() = default;
 
     // --- PURE VIRTUAL INTERFACE ---

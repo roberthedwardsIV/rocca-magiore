@@ -25,12 +25,15 @@ public:
     static std::shared_ptr<BaseAsset> get_asset(int asset_id);
     static void for_each_asset(std::function<void(std::shared_ptr<BaseAsset>)> func);
 
+    // Factory Method for Routes (e.g. "rail_line" -> RailRoute)
     static std::shared_ptr<BaseRoute> get_route(long long id, const std::string& type = "");
     static void for_each_route(std::function<void(std::shared_ptr<BaseRoute>)> func);
 
+    // Factory Method for Hubs (e.g. "port" -> PortHub)
     static std::shared_ptr<BaseHub> get_hub(long long id, const std::string& type = "");
     static void for_each_hub(std::function<void(std::shared_ptr<BaseHub>)> func);
 
+    // Factory Method for ChokePoints (e.g. "bridge" -> BridgeChokePoint)
     static std::shared_ptr<BaseChokePoint> get_chokepoint(int id, const std::string& type = "");
     static void for_each_chokepoint(std::function<void(std::shared_ptr<BaseChokePoint>)> func);
 
