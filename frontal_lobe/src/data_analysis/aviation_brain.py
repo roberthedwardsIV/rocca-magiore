@@ -71,9 +71,9 @@ def check_tactical_gates(cur, m, icao, profile):
 def check_seismic_muting(cur, m, icao):
     if m['alt'] < 3000:
         cur.execute("""
-            SELECT network || '_' || station 
-            FROM earthquake_stations 
-            WHERE ST_DWithin(geom, ST_SetSRID(ST_MakePoint(%s, %s), 4326), 0.08)
+            SELECT network || '_' || station FROM earthquake_stations 
+            WHERE ST_DWithin(ST_SetSRID(ST_MakePoint(longitude, latitude), 4326), 
+                             ST_SetSRID(ST_MakePoint(%s, %s), 4326), 0.08)
         """, (m['lon'], m['lat']))
         for mon in cur.fetchall():
             push_signal("SEISMIC_MASK", mon[0], "earthquake", {"is_voided": True, "icao": icao})
@@ -215,6 +215,8 @@ def start_aviation_brain():
             time.sleep(2)
         except Exception as e:
             print(f"[AVIATION BRAIN] Loop error: {e}")
+            if conn:
+                conn.rollback()
             time.sleep(5)
 
 

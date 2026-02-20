@@ -7,16 +7,15 @@ export default {
   theme: {
     extend: {
       colors: {
-        void: "#0a0b10",       // Deep background
-        gunmetal: "#14161f",   // Panels
-        cyan: "#00f2ea",       // Accents
-        crimson: "#ff0055",    // Alerts
-        amber: "#ffcc00",      // Warnings
-        offwhite: "#e0e0e0"    // Text
+        void: "#0c0c0c",       // Pure Black
+        parchment: "#f5f5f5",  // Nice Tan
+        nautical: "#001f3f",   // Deep Navy Blue
+        slate: "#2d2d2d",      // Subtle Gray
+        paper: "#d4c3a3",      // Off-White
       },
       fontFamily: {
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
-        sans: ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif']
+        mono: ['"JetBrains Mono"', 'monospace'],
+        serif: ['"Georgia"', 'serif'], // For headers to give that "Legacy" feel
       }
     },
   },

@@ -7,7 +7,6 @@ import time
 import re
 from datetime import datetime
 
-# --- LOAD LIGHTWEIGHT NLP ---
 print("[BRAIN] Loading Spacy (Rule-Based)...")
 nlp = spacy.load("en_core_web_sm")
 print("[BRAIN] Spacy Loaded.")
@@ -40,18 +39,7 @@ class RadioNewsSignalProcessor:
                 print(f"[DB ERR] Retrying connection: {e}")
                 await asyncio.sleep(2)
 
-        # DIAGNOSTIC
-        print("[DIAGNOSTIC] Running Startup Self-Test (Deterministic)...")
-        test_eq = self.process_text_deterministic("Breaking: A magnitude 7.2 earthquake struck Chile.")
-        test_asset = self.process_text_deterministic("Fire reported at El Teniente mine.")
-        
-        if any(e['label'] == 'earthquake' for e in test_eq) and any(e['text'] == 'el teniente' for e in test_asset):
-            print("[DIAGNOSTIC] PASSED. Logic is sound.")
-        else:
-            print(f"[DIAGNOSTIC] WARNING. Tests Failed: EQ={test_eq}, Asset={test_asset}")
-
     async def refresh_context_cache(self):
-        # 1. HARDCODED FALLBACKS
         self.context_cache["el teniente"] = {"id": 101, "type": "mine", "lat": -34.09, "lon": -70.35}
         self.context_cache["chevron"] = {"id": 102, "type": "refinery", "lat": 37.9, "lon": -122.4}
         self.context_cache["rotterdam"] = {"id": 201, "type": "maritime_port", "lat": 51.9, "lon": 4.5}
@@ -60,28 +48,31 @@ class RadioNewsSignalProcessor:
         
         async with self.db_pool.acquire() as conn:
             try:
-                # Fetch Lat/Lon from Database
                 rows = await conn.fetch("SELECT id, name, commodity_types[1], latitude, longitude FROM assets")
                 for r in rows:
-                    self.context_cache[r['name'].lower()] = {
-                        "id": r['id'], 
-                        "type": r.get('type', 'mine'),
-                        "lat": float(r['latitude']) if r['latitude'] else 0.0,
-                        "lon": float(r['longitude']) if r['longitude'] else 0.0
-                    } 
+                    if r['name']:
+                        self.context_cache[r['name'].lower()] = {
+                            "id": r['id'], 
+                            "type": r.get('type', 'mine') or 'mine',
+                            "lat": float(r['latitude']) if r['latitude'] else 0.0,
+                            "lon": float(r['longitude']) if r['longitude'] else 0.0
+                        } 
             except Exception as e:
                 print(f"[CACHE ERR] Assets: {e}")
             
             try:
-                rows = await conn.fetch("SELECT id, name, type FROM supply_lines")
+                # FIX 1: Correct column name 'line_id'
+                rows = await conn.fetch("SELECT line_id, name, type FROM supply_lines")
                 for r in rows:
-                    self.context_cache[r['name'].lower()] = {
-                        "id": r['id'], 
-                        "type": r['type'],
-                        "lat": 0.0, 
-                        "lon": 0.0
-                    }
-            except Exception: pass
+                    if r['name']:
+                        self.context_cache[r['name'].lower()] = {
+                            "id": r['line_id'], 
+                            "type": r['type'] or 'supply_line',
+                            "lat": 0.0, 
+                            "lon": 0.0
+                        }
+            except Exception as e: 
+                print(f"[CACHE ERR] Lines: {e}")
 
     async def get_coordinates(self, location_name):
         if not self.db_pool: return (0.0, 0.0)
@@ -117,24 +108,18 @@ class RadioNewsSignalProcessor:
         timestamp = int(time.time() * 1000)
         signal_list = []
         
-        # 1. Handle Earthquakes
         eq_entity = next((e for e in entities if e['label'] == 'earthquake'), None)
         if eq_entity:
             loc_name = next((e['text'] for e in entities if e['label'] == 'location'), None)
-            
             lat, lon = 0.0, 0.0
             
             if loc_name:
-                # A. Try Standard City Lookup
                 lat, lon = await self.get_coordinates(loc_name)
-                
-                # B. CRITICAL FIX: If City Lookup fails (0.0), check Asset Cache (Rolodex)
                 if lat == 0.0 and lon == 0.0:
                     asset_info = self.context_cache.get(loc_name.lower())
                     if asset_info:
                         lat = asset_info.get('lat', 0.0)
                         lon = asset_info.get('lon', 0.0)
-                        print(f"[BRAIN] Location '{loc_name}' matched to Asset ID {asset_info['id']}. Coords: {lat}, {lon}")
 
             mag_ent = next((e for e in entities if e['label'] == 'magnitude'), None)
             mag = float(mag_ent['text']) if mag_ent else 5.0
@@ -147,14 +132,14 @@ class RadioNewsSignalProcessor:
                 "data": {"lat": lat, "lon": lon, "mag": mag, "mmi": 1.0}
             })
 
-        # 2. Handle Assets
         for ent in entities:
             if ent['label'] in ["location", "earthquake", "magnitude"]: continue
             
             db_id = ent['id']
-            e_type = ent['label']
-            cat, sev = self.determine_category_and_severity(e_type, text_context)
+            # FIX 2: Ensure entity_type is NEVER null. Default to 'unknown'.
+            e_type = ent.get('label') or "unknown"
             
+            cat, sev = self.determine_category_and_severity(e_type, text_context)
             cached_info = self.context_cache.get(ent['text'].lower(), {})
             asset_lat = cached_info.get("lat", 0.0)
             asset_lon = cached_info.get("lon", 0.0)
@@ -183,27 +168,21 @@ class RadioNewsSignalProcessor:
         doc = nlp(text)
         entities = []
 
-        # A. ASSET DETECTOR (The "Rolodex") - Run FIRST to prioritize asset names
-        # This ensures "El Teniente" is identified as a known entity early
         for name, info in self.context_cache.items():
             if name in text_lower:
                 entities.append({
-                    "label": info['type'],
+                    "label": info['type'] or "asset", # Fallback string
                     "text": name,
                     "id": info['id']
                 })
-                # If we find a known asset, ALSO treat it as a location candidate
                 entities.append({"label": "location", "text": name})
 
-        # B. EARTHQUAKE DETECTOR
         if "earthquake" in text_lower or "quake" in text_lower:
             entities.append({"label": "earthquake", "text": "earthquake"})
             mag_match = re.search(r"(?:magnitude|mag)\s*([\d\.]+)", text_lower)
             if mag_match:
                 entities.append({"label": "magnitude", "text": mag_match.group(1)})
             
-            # Add Spacy entities ONLY if they aren't already found by Rolodex
-            # (Simplistic de-duplication)
             existing_locs = {e['text'] for e in entities if e['label'] == 'location'}
             for ent in doc.ents:
                 if ent.label_ in ["GPE", "LOC"] and ent.text.lower() not in existing_locs:
@@ -227,12 +206,15 @@ class RadioNewsSignalProcessor:
                 
                 print(f"[DEBUG] Analyzing: {context[:40]}...")
                 entities = self.process_text_deterministic(context)
-                print(f"[DEBUG] Found Entities: {len(entities)}")
                 
                 signals = await self.construct_thalamus_signal(entities, context)
                 for sig in signals:
-                    print(f"[BRAIN] SIGNAL GENERATED: {sig['entity_type']} -> ID: {sig['data'].get('asset_id', 'EQ')}")
-                    await redis_client.lpush("raw_signals", json.dumps(sig))
+                    # FIX 3: Verify payload integrity before sending
+                    if sig.get("entity_type") and isinstance(sig["entity_type"], str):
+                        print(f"[BRAIN] SIGNAL GENERATED: {sig['entity_type']}")
+                        await redis_client.lpush("raw_signals", json.dumps(sig))
+                    else:
+                        print(f"[BRAIN WARN] Dropped malformed signal: {sig}")
 
         except Exception as e:
             print(f"[ERR] Processing Error: {e}")

@@ -21,8 +21,7 @@ services:
       - hippocampus
       - corpus_callosum
       - ibkr_gateway
-    networks:
-      - rocco_net
+    network_mode: "service:ibkr_gateway"  
     tty: true
     restart: always
 
@@ -54,10 +53,7 @@ services:
   thalamus:
     build: 
       context: .
-      dockerfile: ./thalamus/Dockerfile
-    volumes:
-      - ./thalamus:/app
-      - ./common:/app/common         
+      dockerfile: ./thalamus/Dockerfile       
     container_name: thalamus
     environment:
       - DB_HOST=hippocampus
@@ -78,7 +74,7 @@ services:
       context: .
       dockerfile: ./brainstem/Dockerfile
     volumes:
-      - ./brainstem:/app
+      - ./brainstem/logs:/app/logs
       - ./common:/app/common
     container_name: brainstem
     environment:
@@ -86,8 +82,7 @@ services:
     depends_on:
       - corpus_callosum
       - ibkr_gateway
-    networks:
-      - rocco_net
+    network_mode: "service:ibkr_gateway"
     restart: always
 
   # ------------------ IBKR Gateway (Brokerage Access) ------------------
@@ -99,11 +94,14 @@ services:
       - TWS_PASSWORD=${TWS_PASSWORD}   
       - TRADING_MODE=paper             
       - READ_ONLY_API=false            
-      - ACCEPT_INCOMING_CONNECTION=true 
+      - TWS_ACCEPT_INCOMING=true  
       - VNC_SERVER_PASSWORD=secure_vnc_pass
-    ports:
-      - "4001:4001"  # API Port
-      - "5900:5900"  # VNC Port
+    ports:      
+      - "4001:4001"  
+      - "4002:4002"  
+      - "5900:5900" 
+    volumes:
+      - ./ibkr_config/jts.ini:/home/ibgateway/Jts/jts.ini
     networks:
       - rocco_net
     restart: always
@@ -118,7 +116,7 @@ services:
       POSTGRES_DB: rocco_commodities
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./hippocampus/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - rocco_net
     ports:
@@ -141,6 +139,8 @@ services:
       - DB_HOST=hippocampus
       - DB_USER=${DB_USER}
       - DB_PASS=${DB_PASS}
+    volumes:                                          
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - corpus_callosum
       - hippocampus
@@ -155,7 +155,7 @@ services:
       context: ./visual_cortex/frontend
     container_name: visual_cortex_frontend
     environment:
-      - VITE_API_URL=http://localhost:8000
+      - VITE_API_URL=http://127.0.0.1:8000
     depends_on:
       - visual_cortex_backend
     networks:

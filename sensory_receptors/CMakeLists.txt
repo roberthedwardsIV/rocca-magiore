@@ -10,6 +10,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(ZLIB REQUIRED)  
 find_package(BZip2 REQUIRED)
 find_package(EXPAT REQUIRED)
+find_package(CURL REQUIRED)
 
 pkg_check_modules(PQXX REQUIRED libpqxx)
 pkg_check_modules(HIREDIS REQUIRED hiredis)
@@ -29,6 +30,7 @@ include_directories(
     ${BZIP2_INCLUDE_DIRS}
     ${OSMIUM_INCLUDE_DIRS}
     ${EXPAT_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
     /usr/include/postgresql
     /usr/include/intel_math
     /usr/include
@@ -71,7 +73,7 @@ target_link_libraries(fred_macro ${HIREDIS_LIBRARIES} curl nlohmann_json::nlohma
 
 # --- DISCOVERY (OSM) ---
 add_executable(osm_ingest src/discovery/osm_ingest.cpp)
-target_link_libraries(osm_ingest ${PQXX_LIBRARIES} ${ZLIB_LIBRARIES} ${BZIP2_LIBRARIES} ${EXPAT_LIBRARIES} pthread z)
+target_link_libraries(osm_ingest ${PQXX_LIBRARIES} ${CURL_LIBRARIES} nlohmann_json::nlohmann_json pthread)
 
 # --- RADIO ENGINE ---
 add_subdirectory(src/data_sources/med_streams)

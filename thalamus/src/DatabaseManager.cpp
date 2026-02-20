@@ -20,34 +20,38 @@ bool init_database() {
     return false;
 }
 
+std::string safe_str(const json& j, const std::string& key, const std::string& def = "") {
+    if (j.contains(key) && j[key].is_string()) return j[key].get<std::string>();
+    return def;
+}
+
 void save_to_database(const json& state) {
     try {
+        std::string type = safe_str(state, "entity_type", "unknown");
+        
+        // Ignore transient signals, tickers, and unknown types to prevent SQL errors
+        if (type == "signal" || type == "ticker" || type == "unknown") return;
+
         pqxx::connection C(conn_str);
         pqxx::work W(C);
-        std::string type = state.value("entity_type", "unknown");
         std::string id;
         
-        if (state.contains("entity_id")) {
-            // Earthquakes have string IDs
+        // Robust ID Extraction with Type Safety
+        if (state.contains("entity_id") && state["entity_id"].is_string()) {
             id = state["entity_id"].get<std::string>();
-        } else if (state.contains("asset_id")) {
-            // Assets have integer IDs -> Convert to string
+        } else if (state.contains("asset_id") && state["asset_id"].is_number()) {
             id = std::to_string(state["asset_id"].get<int>());
-        } else if (state.contains("line_id")) {
-            // Supply Lines have integer IDs -> Convert to string
+        } else if (state.contains("line_id") && state["line_id"].is_number()) {
             id = std::to_string(state["line_id"].get<long long>());
-        } else if (state.contains("cp_id")) {
-            // Chokepoints have integer IDs
+        } else if (state.contains("cp_id") && state["cp_id"].is_number()) {
             id = std::to_string(state["cp_id"].get<int>());
-        } else if (state.contains("hub_id")) {
-            // Hubs have integer IDs
+        } else if (state.contains("hub_id") && state["hub_id"].is_number()) {
             id = std::to_string(state["hub_id"].get<long long>());
         } else if (state.contains("id")) {
-            // Fallback for generic objects
             if (state["id"].is_number()) id = std::to_string(state["id"].get<long long>());
-            else id = state["id"].get<std::string>();
+            else if (state["id"].is_string()) id = state["id"].get<std::string>();
         } else {
-            id = "unknown";
+            return; // Skip if no valid ID found
         }
 
         if (type == "earthquake") {
@@ -65,23 +69,29 @@ void save_to_database(const json& state) {
                               "ON CONFLICT (id) DO UPDATE SET magnitude=EXCLUDED.magnitude, intensity=EXCLUDED.intensity, history=EXCLUDED.history;";
             W.exec(sql);
         }
-        else if (type == "mine" || type == "refinery" || type == "smelter" || type == "power_plant") {
+        else if (type == "mine" || type == "refinery" || type == "smelter" || type == "power_plant" || type == "port") {
+            long long ts = state.value("timestamp", state.value("last_update", 0LL));
+            
             std::string sql = "INSERT INTO asset_states (asset_id, op_health, fin_health, threat_level, last_update) "
                               "VALUES (" + C.quote(id) + ", " + std::to_string(state.value("op_health", 1.0f)) + ", " +
                               std::to_string(state.value("fin_health", 1.0f)) + ", " + std::to_string(state.value("threat_level", 0.0f)) + ", " +
-                              std::to_string(state.value("timestamp", 0LL)) + ") "
+                              std::to_string(ts) + ") "
                               "ON CONFLICT (asset_id) DO UPDATE SET op_health=EXCLUDED.op_health, fin_health=EXCLUDED.fin_health, "
                               "threat_level=EXCLUDED.threat_level, last_update=EXCLUDED.last_update;";
             W.exec(sql);
         }
         else {
             // Generic handler for supply lines, hubs, chokepoints
-            // Note: In a real system, you might want separate tables for hubs/chokepoints history
-            std::string sql = "INSERT INTO supply_states (line_id, type, state_data, last_update) "
-                              "VALUES (" + C.quote(id) + ", " + W.quote(type) + ", " + W.quote(state.dump()) + "::jsonb, " +
-                              std::to_string(state.value("last_update", 0LL)) + ") "
-                              "ON CONFLICT (line_id) DO UPDATE SET state_data=EXCLUDED.state_data, last_update=EXCLUDED.last_update;";
-            W.exec(sql);
+            if (state.contains("line_id")) {
+                // FIXED SCHEMA CONFLICT: Omitted the 'type' field from the INSERT (generated column in PostgreSQL)
+                long long ts = state.value("last_update", state.value("timestamp", 0LL));
+                
+                std::string sql = "INSERT INTO supply_states (line_id, state_data, last_update) "
+                                  "VALUES (" + C.quote(id) + ", " + W.quote(state.dump()) + "::jsonb, " +
+                                  std::to_string(ts) + ") "
+                                  "ON CONFLICT (line_id) DO UPDATE SET state_data=EXCLUDED.state_data, last_update=EXCLUDED.last_update;";
+                W.exec(sql);
+            }
         }
         W.commit();
     } catch (const std::exception &e) {

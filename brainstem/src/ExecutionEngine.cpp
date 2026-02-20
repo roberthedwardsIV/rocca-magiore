@@ -20,7 +20,7 @@ ExecutionEngine::~ExecutionEngine() {
 bool ExecutionEngine::connect(const char* host, int port, int clientId) {
     bool res = client->eConnect(host, port, clientId);
     if (res) {
-        std::cout << "[BRAINSTEM] Connected to IBKR Gateway." << std::endl;
+        std::cout << "[BRAINSTEM] Connected to IBKR Gateway. Awaiting Handshake..." << std::endl;
         // Start EReader thread to handle incoming messages
         reader = std::make_unique<EReader>(client.get(), &m_osSignal);
         reader->start();
@@ -41,6 +41,12 @@ void ExecutionEngine::process_messages() {
 void ExecutionEngine::handle_thalamus_signal(const json& signal) {
     std::lock_guard<std::mutex> lock(engine_mtx);
     
+    // THE FIX: Gateway Readiness Lock
+    if (!is_ready) {
+        std::cerr << "[BRAINSTEM] Warning: IBKR Gateway not ready (No Valid ID). Dropping signal." << std::endl;
+        return;
+    }
+
     std::string symbol = signal.value("symbol", "");
     if (symbol.empty()) return;
 
@@ -184,6 +190,17 @@ void ExecutionEngine::place_order(const std::string& symbol, const std::string& 
         for (const auto& o : bracket) {
             client->placeOrder(o.orderId, contract, o);
         }
+
+        json log_sig;
+        log_sig["symbol"] = symbol;
+        log_sig["action"] = action;
+        log_sig["target_price"] = limit_price;
+        log_sig["stop_loss"] = stop_price;
+        log_sig["take_profit"] = take_profit;
+        
+        // Log it (using limit_price as fill price estimate for the log)
+        TradeLogger::log_simulated_trade(log_sig, 0.0, quantity, limit_price, limit_price);
+        
         
         nextOrderId += 3; // Advance ID for Parent + Stop + Target
 
@@ -226,8 +243,10 @@ void ExecutionEngine::tickPrice(TickerId tickerId, TickType field, double price,
 }
 
 void ExecutionEngine::nextValidId(OrderId orderId) {
+    // THE FIX: Unlock the engine once IBKR gives the green light
     nextOrderId = orderId;
-    std::cout << "[IBKR] Next Valid Order ID Synced: " << nextOrderId << std::endl;
+    is_ready = true; 
+    std::cout << "[IBKR] Next Valid Order ID Synced: " << nextOrderId << ". ENGINE READY." << std::endl;
 }
 
 void ExecutionEngine::error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) {

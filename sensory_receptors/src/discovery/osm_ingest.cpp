@@ -2,14 +2,13 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include <unordered_set>
-#include <cstring>
-#include <osmium/io/any_input.hpp>
-#include <osmium/handler.hpp>
-#include <osmium/visitor.hpp>
-#include <osmium/geom/wkb.hpp>
-#include <osmium/area/assembler.hpp>            
-#include <osmium/area/multipolygon_manager.hpp> 
+#include <thread>
+#include <chrono>
+#include <sstream>
+#include <atomic>
+#include <iomanip>
+#include <algorithm>
+#include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 
@@ -17,425 +16,453 @@ using json = nlohmann::json;
 
 // --- CONFIGURATION ---
 const std::string DB_CONN = "dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432";
+const std::string OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+const int BATCH_SIZE = 250;
 
-// Helper: Safely get a tag or return empty string
-std::string get_tag(const osmium::TagList& tags, const char* key) {
-    const char* val = tags[key];
-    return val ? std::string(val) : "";
+// --- GLOBAL STATS ---
+std::atomic<int> stats_db_errors{0};
+std::atomic<int> stats_saved{0};
+
+// --- HELPER: CURL WRITER WITH HEARTBEAT ---
+struct FetchContext {
+    std::string* buffer;
+    size_t last_log_size = 0;
+    std::string phase_name;
+    std::chrono::time_point<std::chrono::steady_clock> start_time = std::chrono::steady_clock::now();
+};
+
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t total_size = size * nmemb;
+    FetchContext* ctx = static_cast<FetchContext*>(userp);
+    
+    try {
+        ctx->buffer->append((char*)contents, total_size);
+    } catch (const std::bad_alloc& e) {
+        std::cerr << "\n[OSM INGEST][" << ctx->phase_name << "][CRITICAL] Out of Memory (OOM) during download! Buffer size: " 
+                  << (ctx->buffer->size() / 1024 / 1024) << " MB" << std::endl;
+        return 0; // Abort cURL
+    }
+
+    // Heartbeat: Log every 10 MB downloaded
+    if (ctx->buffer->size() - ctx->last_log_size > 10 * 1024 * 1024) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - ctx->start_time).count();
+        std::cout << "   -> [" << ctx->phase_name << "] Streaming... " 
+                  << (ctx->buffer->size() / 1024 / 1024) << " MB | Elapsed: " << elapsed << "s" << std::endl;
+        ctx->last_log_size = ctx->buffer->size();
+    }
+    return total_size;
 }
 
-class MegaLogisticsHandler : public osmium::handler::Handler {
-    osmium::geom::WKBFactory<> m_factory;
+// --- HELPER: EXECUTE OVERPASS QUERY ---
+std::string fetch_overpass_data(const std::string& query, const std::string& phase_name) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::cerr << "[OSM INGEST][" << phase_name << "] Failed to initialize cURL." << std::endl;
+        return "";
+    }
+
+    std::string response_buffer;
+    FetchContext ctx = {&response_buffer, 0, phase_name, std::chrono::steady_clock::now()};
+
+    char* encoded_query = curl_easy_escape(curl, query.c_str(), query.length());
+    std::string url = OVERPASS_URL + "?data=" + std::string(encoded_query);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "RoccoMaggiore-AI-Nexus/1.0");
+    
+    // Hardened Network Settings
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);         // 10 min max total time per sector
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);   // 30 seconds to establish connection
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);     
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 60L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 30L);
+
+    auto start = std::chrono::steady_clock::now();
+    CURLcode res = curl_easy_perform(curl);
+    auto end = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - ctx.start_time).count();
+    
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    if (res != CURLE_OK) {
+        std::cerr << "   -> [CURL ERROR] " << curl_easy_strerror(res) << " after " << duration << "s." << std::endl;
+    } else {
+        if (http_code == 429) {
+            std::cerr << "   -> [RATE LIMITED] Overpass rejected request (Too Many Requests). Waiting 60s..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(60));
+            response_buffer = ""; // Clear bad payload
+        } else if (http_code >= 500 && http_code <= 599) {
+            // THE FIX: Intercept 504 Gateway Timeouts and 502 Bad Gateways quietly
+            std::cerr << "   -> [HTTP " << http_code << "] Overpass API Server Error (Overloaded). Suppressing HTML dump." << std::endl;
+            response_buffer = ""; // Clear bad HTML payload to trigger our clean retry loop
+        } else if (http_code != 200) {
+            // Fallback for other errors: Sanitize newlines to prevent terminal spam
+            std::string snippet = response_buffer.length() > 50 ? response_buffer.substr(0, 50) + "..." : response_buffer;
+            std::replace(snippet.begin(), snippet.end(), '\n', ' ');
+            std::cerr << "   -> [HTTP " << http_code << "] Failed. Response: " << snippet << std::endl;
+            response_buffer = "";
+        } else {
+            std::cout << "   -> [SUCCESS] Downloaded " << std::fixed << std::setprecision(2) 
+                      << (response_buffer.size() / 1024.0 / 1024.0) << " MB in " << duration << "s." << std::endl;
+        }
+    }
+    
+    curl_free(encoded_query);
+    curl_easy_cleanup(curl);
+    return response_buffer;
+}
+
+// --- HELPER: TAG PARSING ---
+bool has_tag_value(const json& tags, const std::string& key, const std::string& partial) {
+    if (tags.contains(key)) {
+        std::string val = tags[key].get<std::string>();
+        return val.find(partial) != std::string::npos;
+    }
+    return false;
+}
+
+std::string get_tag(const json& tags, const std::string& key, const std::string& fallback = "") {
+    return tags.contains(key) ? tags[key].get<std::string>() : fallback;
+}
+
+// --- DB HANDLER ---
+class DatabaseHandler {
     pqxx::connection m_db;
-    pqxx::work* m_work;
+    pqxx::work* m_work = nullptr;
     int m_counter = 0;
-    const int BATCH_SIZE = 5000;
 
 public:
-    MegaLogisticsHandler() : m_db(DB_CONN), m_factory(osmium::geom::wkb_type::wkb, osmium::geom::out_type::hex) {
-        m_work = new pqxx::work(m_db);
-        // Prepare statements with ON CONFLICT DO NOTHING to handle overlaps
-        m_db.prepare("insert_asset", "INSERT INTO assets (name, type, commodity_types, geom, source, last_update) VALUES ($1, $2, $3, ST_GeomFromEWKB(decode($4, 'hex')), 'OSM_ULTRA', 1) ON CONFLICT DO NOTHING");
-        m_db.prepare("insert_hub", "INSERT INTO supply_hubs (name, type, geom, capacity_rating, last_updated) VALUES ($1, $2, ST_GeomFromEWKB(decode($3, 'hex')), $4, NOW()) ON CONFLICT DO NOTHING");
-        m_db.prepare("insert_route", "INSERT INTO supply_lines (name, type, geom, state_data, last_update) VALUES ($1, $2, ST_GeomFromEWKB(decode($3, 'hex')), $4, 1) ON CONFLICT DO NOTHING");
-        m_db.prepare("insert_choke", "INSERT INTO supply_chokepoints (name, type, geom, max_weight_tons, structural_health, last_updated) VALUES ($1, $2, ST_Centroid(ST_GeomFromEWKB(decode($3, 'hex'))), $4, 1.0, NOW()) ON CONFLICT DO NOTHING");
+    DatabaseHandler() : m_db(DB_CONN) {
+        if (!m_db.is_open()) throw std::runtime_error("DB Connection Failed");
+        
+        // SELF-HEALING SCHEMA
+        try {
+            pqxx::work W(m_db);
+            W.exec("ALTER TABLE assets ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;");
+            W.commit();
+        } catch (const std::exception& e) {
+            std::cerr << "[OSM INGEST] DB Schema warning: " << e.what() << std::endl;
+        }
+
+        reset_transaction();
+        
+        m_db.prepare("insert_asset", 
+            "INSERT INTO assets (name, type, commodity_types, geom, source, last_update, op_health, metadata) "
+            "VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326), 'OSM_INGEST', 1, 1.0, $6) "
+            "ON CONFLICT (name) DO UPDATE SET metadata = EXCLUDED.metadata");
+        
+        m_db.prepare("insert_hub",   
+            "INSERT INTO supply_hubs (osm_id, name, type, geom, capacity_rating, last_updated) "
+            "VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326), $6, NOW()) ON CONFLICT (osm_id) DO UPDATE SET last_updated = NOW()");
+        
+        m_db.prepare("insert_route", 
+            "INSERT INTO supply_lines (line_id, name, type, geom, state_data, last_update) "
+            "VALUES ($1, $2, $3, ST_SetSRID(ST_GeomFromText($4), 4326), $5, 1) ON CONFLICT (line_id) DO UPDATE SET last_update = 1");
+        
+        m_db.prepare("insert_choke", 
+            "INSERT INTO supply_chokepoints (name, type, geom, max_weight_tons, structural_health, last_updated) "
+            "VALUES ($1, $2, ST_Centroid(ST_SetSRID(ST_GeomFromText($3), 4326)), $4, 1.0, NOW()) ON CONFLICT DO NOTHING");
     }
 
-    ~MegaLogisticsHandler() { commit_batch(); }
-
-    void commit_batch() {
+    ~DatabaseHandler() { 
         if (m_work) {
-            m_work->commit();
+            try { m_work->commit(); } catch (...) {}
             delete m_work;
-            m_work = new pqxx::work(m_db);
-            m_counter = 0;
         }
     }
 
-    // =================================================================================
-    // SECTION 1: EXTRACTION (The Source)
-    // Captures: Mines, Quarries, Wells, Rigs, Platforms, Tailings (Risk)
-    // =================================================================================
-    void process_extraction(const osmium::Area& area) {
-        std::string landuse = get_tag(area.tags(), "landuse");
-        std::string industrial = get_tag(area.tags(), "industrial");
-        std::string man_made = get_tag(area.tags(), "man_made");
-        std::string resource = get_tag(area.tags(), "resource");
-        std::string name = get_tag(area.tags(), "name");
+    void reset_transaction() {
+        if (m_work) delete m_work;
+        m_work = new pqxx::work(m_db);
+        m_counter = 0;
+    }
 
-        std::vector<std::string> comms;
-        if (!resource.empty()) comms.push_back(resource);
-
-        // 1.1 Mines & Quarries
-        if (landuse == "quarry" || industrial == "mine" || industrial == "mining" || landuse == "salt_pond") {
-            save_asset(area, name, "mine", comms);
-        }
-        // 1.2 Offshore Platforms (Oil/Gas) [Cite: OSM Wiki Map Features]
-        else if (man_made == "offshore_platform") {
-            comms.push_back("Oil/Gas");
-            save_asset(area, name.empty() ? "Offshore Platform" : name, "mine", comms);
-        }
-        // 1.3 Fracking / Well Sites
-        else if (industrial == "wellsite" || industrial == "well_cluster") {
-            comms.push_back("Hydrocarbons");
-            save_asset(area, name, "mine", comms);
-        }
-        // 1.4 Tailings Ponds (CRITICAL RISK ASSET)
-        // These aren't "active mines" but they are massive liabilities. We map them as Hubs (Waste Storage).
-        else if (man_made == "tailings_pond") {
-            save_hub(area, name.empty() ? "Tailings Dam" : name, "tailings_storage", 0.0); // 0 capacity = full risk
+    void execute_asset(const std::string& name, const std::string& type, const std::string& comms, double lon, double lat, const std::string& metadata_json) {
+        try {
+            m_work->exec_prepared("insert_asset", name, type, comms, lon, lat, metadata_json);
+            stats_saved++;
+            commit_if_needed();
+        } catch (const std::exception& e) { 
+            stats_db_errors++; 
+            reset_transaction(); 
         }
     }
 
-    // =================================================================================
-    // SECTION 2: PROCESSING (The Transformation)
-    // Captures: Factories, Smelters, Refineries, Chemical Plants
-    // =================================================================================
-    void process_industry(const osmium::Area& area) {
-        std::string industrial = get_tag(area.tags(), "industrial");
-        std::string man_made = get_tag(area.tags(), "man_made");
-        std::string product = get_tag(area.tags(), "product");
-        std::string name = get_tag(area.tags(), "name");
-
-        // 2.1 Smelters (High Heat)
-        if (industrial == "smelter" || industrial == "aluminium_smelting" || product == "aluminium" || product == "steel") {
-            save_asset(area, name, "smelter", {});
-        }
-        // 2.2 Refineries (Chemical/Oil)
-        else if (industrial == "refinery" || industrial == "oil" || industrial == "chemical") {
-            save_asset(area, name, "refinery", {});
-        }
-        // 2.3 General Factories (If explicitly industrial)
-        else if (man_made == "works" && !name.empty()) {
-            // Only capture named works to avoid noise
-            save_asset(area, name, "refinery", {}); // Default to refinery class for generic factories
-        }
+    void execute_hub(long long osm_id, const std::string& name, const std::string& type, double lon, double lat, float cap) {
+        try {
+            m_work->exec_prepared("insert_hub", osm_id, name, type, lon, lat, cap);
+            stats_saved++;
+            commit_if_needed();
+        } catch (...) { stats_db_errors++; reset_transaction(); }
     }
 
-    // =================================================================================
-    // SECTION 3: STORAGE & LOGISTICS (The Buffer)
-    // Captures: Warehouses, Tanks, Silos, Depots, Terminals
-    // =================================================================================
-    void process_storage(const osmium::Area& area) {
-        std::string building = get_tag(area.tags(), "building");
-        std::string man_made = get_tag(area.tags(), "man_made");
-        std::string industrial = get_tag(area.tags(), "industrial");
-        std::string amenity = get_tag(area.tags(), "amenity");
-        std::string name = get_tag(area.tags(), "name");
-
-        // 3.1 Warehousing
-        if (building == "warehouse" || industrial == "warehouse" || industrial == "logistics") {
-            save_hub(area, name, "warehouse", 0.5);
-        }
-        // 3.2 Liquid/Bulk Storage
-        else if (man_made == "storage_tank" || man_made == "silo" || man_made == "bunker_silo") {
-            std::string content = get_tag(area.tags(), "content");
-            save_hub(area, content.empty() ? "Storage Tank" : content + " Tank", "storage_tank", 0.2);
-        }
-        // 3.3 Freight Terminals
-        else if (industrial == "depot" || industrial == "terminal" || amenity == "loading_dock") {
-            save_hub(area, name, "logistics_terminal", 0.8);
-        }
+    void execute_route(long long osm_id, const std::string& name, const std::string& type, const std::string& wkt, const std::string& state_json) {
+        try {
+            m_work->exec_prepared("insert_route", osm_id, name, type, wkt, state_json);
+            stats_saved++;
+            commit_if_needed();
+        } catch (...) { stats_db_errors++; reset_transaction(); }
     }
 
-    // =================================================================================
-    // SECTION 4: AVIATION (The Air Link)
-    // Captures: Airports, Helipads, Runways, Aprons
-    // =================================================================================
-    void process_aviation(const osmium::Area& area) {
-        std::string aeroway = get_tag(area.tags(), "aeroway");
-        std::string name = get_tag(area.tags(), "name");
-        
-        if (aeroway == "aerodrome") {
-            std::string iata = get_tag(area.tags(), "iata");
-            float cap = iata.empty() ? 0.1 : 1.0;
-            save_hub(area, name.empty() ? "Unknown Aerodrome" : name, "airport", cap);
-        }
-        else if (aeroway == "heliport") {
-            save_hub(area, name, "heliport", 0.05);
-        }
-        else if (aeroway == "runway") {
-            // Physical Chokepoint
-            float length = 0.0;
-            try { length = std::stof(get_tag(area.tags(), "length")); } catch(...) {}
-            save_chokepoint_area(area, name, "runway", length); 
-        }
+    void execute_choke(const std::string& name, const std::string& type, const std::string& wkt, float weight) {
+        try {
+            m_work->exec_prepared("insert_choke", name, type, wkt, weight);
+            stats_saved++;
+            commit_if_needed();
+        } catch (...) { stats_db_errors++; reset_transaction(); }
     }
-
-    // =================================================================================
-    // SECTION 5: MARITIME (The Sea Link)
-    // Captures: Ports, Docks, Quays, Dredged Channels
-    // =================================================================================
-    void process_maritime_area(const osmium::Area& area) {
-        std::string industrial = get_tag(area.tags(), "industrial");
-        std::string waterway = get_tag(area.tags(), "waterway");
-        std::string man_made = get_tag(area.tags(), "man_made");
-        std::string name = get_tag(area.tags(), "name");
-
-        if (industrial == "port" || get_tag(area.tags(), "harbour") == "yes") {
-            save_hub(area, name, "maritime_port", 1.0);
+    
+    void force_commit() {
+        if (m_counter > 0 && m_work) {
+            m_work->commit();
+            reset_transaction();
         }
-        else if (waterway == "dock" || man_made == "quay" || man_made == "pier" || man_made == "jetty") {
-            save_hub(area, name, "maritime_dock", 0.3);
-        }
-    }
-
-    // =================================================================================
-    // SECTION 6: TRANSPORT ROUTES (The Arteries)
-    // Captures: Rail, Road, Conveyors, Pipelines, Waterways
-    // =================================================================================
-    void process_routes(const osmium::Way& way) {
-        std::string railway = get_tag(way.tags(), "railway");
-        std::string highway = get_tag(way.tags(), "highway");
-        std::string man_made = get_tag(way.tags(), "man_made");
-        std::string aerialway = get_tag(way.tags(), "aerialway");
-        std::string waterway = get_tag(way.tags(), "waterway");
-        std::string name = get_tag(way.tags(), "name");
-
-        // 6.1 Rail (Detailed)
-        if (railway == "rail" || railway == "narrow_gauge") {
-            json state;
-            state["gauge"] = get_tag(way.tags(), "gauge");
-            state["electrified"] = get_tag(way.tags(), "electrified");
-            state["usage"] = get_tag(way.tags(), "usage"); // industrial/main
-            
-            std::string service = get_tag(way.tags(), "service");
-            std::string type = "rail_mainline";
-            if (service == "spur" || service == "siding" || get_tag(way.tags(), "usage") == "industrial") {
-                type = "rail_spur";
-            }
-            save_route(way, name, type, state.dump());
-        }
-
-        // 6.2 Road (Heavy Haul)
-        else if (highway == "motorway" || highway == "trunk" || highway == "primary") {
-            json state;
-            state["lanes"] = get_tag(way.tags(), "lanes");
-            state["surface"] = get_tag(way.tags(), "surface");
-            save_route(way, name, "highway_trunk", state.dump());
-        }
-
-        // 6.3 Conveyor Belts (CRITICAL for Mining Logistics)
-        //
-        else if (man_made == "conveyor_belt" || aerialway == "goods") {
-            json state;
-            state["resource"] = get_tag(way.tags(), "resource");
-            save_route(way, name.empty() ? "Industrial Conveyor" : name, "conveyor", state.dump());
-        }
-
-        // 6.4 Pipelines
-        else if (man_made == "pipeline") {
-            json state;
-            state["substance"] = get_tag(way.tags(), "substance");
-            state["diameter"] = get_tag(way.tags(), "diameter");
-            save_route(way, name, "pipeline", state.dump());
-        }
-
-        // 6.5 Inland Waterways (Barges)
-        else if (waterway == "river" || waterway == "canal") {
-            std::string cemt = get_tag(way.tags(), "CEMT"); // European Classification
-            std::string ship = get_tag(way.tags(), "ship");
-            if (!cemt.empty() || ship == "yes") {
-                json state;
-                state["class"] = cemt;
-                save_route(way, name, "inland_waterway", state.dump());
-            }
-        }
-    }
-
-    // =================================================================================
-    // SECTION 7: CHOKEPOINTS & UTILITIES (The Nervous System)
-    // Captures: Bridges, Tunnels, Pumps, Cranes, Telecom, Power
-    // =================================================================================
-    void process_chokepoints_linear(const osmium::Way& way) {
-        std::string bridge = get_tag(way.tags(), "bridge");
-        std::string tunnel = get_tag(way.tags(), "tunnel");
-        std::string barrier = get_tag(way.tags(), "barrier");
-        std::string name = get_tag(way.tags(), "name");
-
-        if (bridge == "yes" || bridge == "viaduct" || bridge == "cantilever") {
-            save_chokepoint_linear(way, name, "bridge");
-        }
-        else if (tunnel == "yes") {
-            save_chokepoint_linear(way, name, "tunnel");
-        }
-        else if (barrier == "border_control") {
-            save_chokepoint_linear(way, name, "border_crossing");
-        }
-    }
-
-    void process_chokepoints_point(const osmium::Node& node) {
-        // Sometimes features are just nodes
-        std::string man_made = get_tag(node.tags(), "man_made");
-        std::string name = get_tag(node.tags(), "name");
-
-        // 7.1 Pumping Stations (Pipeline Chokepoints)
-        if (man_made == "pumping_station" || man_made == "pumping_rig") {
-            save_chokepoint_node(node, name, "pumping_station");
-        }
-        // 7.2 Cranes (Port Capacity Chokepoints)
-        else if (man_made == "crane") {
-            save_chokepoint_node(node, name, "crane");
-        }
-        // 7.3 Telecom (Coordination Hubs)
-        else if (man_made == "mast" || man_made == "tower") {
-            if (get_tag(node.tags(), "tower:type") == "communication") {
-                save_hub_node(node, name, "telecom_tower");
-            }
-        }
-    }
-
-    // =================================================================================
-    // DISPATCHERS
-    // =================================================================================
-    void area(const osmium::Area& area) {
-        process_extraction(area);
-        process_industry(area);
-        process_storage(area);
-        process_aviation(area);
-        process_maritime_area(area);
-        
-        // Power Plants (Assets)
-        if (get_tag(area.tags(), "power") == "plant") {
-            save_asset(area, get_tag(area.tags(), "name"), "power_plant", {});
-        }
-        // Water Reservoirs (Hubs)
-        if (get_tag(area.tags(), "landuse") == "reservoir") {
-            save_hub(area, get_tag(area.tags(), "name"), "water_reservoir", 1.0);
-        }
-    }
-
-    void way(const osmium::Way& way) {
-        process_routes(way);
-        process_chokepoints_linear(way);
-        
-        // Power Lines (High Voltage)
-        if (get_tag(way.tags(), "power") == "line") {
-            save_route(way, get_tag(way.tags(), "name"), "power_grid", "{}");
-        }
-    }
-
-    void node(const osmium::Node& node) {
-        process_chokepoints_point(node);
     }
 
 private:
-    // --- DB HELPERS ---
-    void save_asset(const osmium::Area& area, std::string name, std::string type, std::vector<std::string> comms) {
-        try {
-            std::string wkb = m_factory.create_multipolygon(area);
-            if (name.empty()) name = "Unknown " + type;
-            std::string c_str = "{";
-            for (auto& c : comms) c_str += "\"" + c + "\",";
-            if (c_str.length() > 1) c_str.pop_back();
-            c_str += "}";
-            m_work->exec_prepared("insert_asset", name, type, c_str, wkb);
-            check_commit();
-        } catch (...) {}
-    }
-
-    void save_hub(const osmium::Area& area, std::string name, std::string type, float capacity) {
-        try {
-            std::string wkb = m_factory.create_multipolygon(area);
-            if (name.empty()) name = "Unknown " + type;
-            m_work->exec_prepared("insert_hub", name, type, wkb, capacity);
-            check_commit();
-        } catch (...) {}
-    }
-
-    void save_hub_node(const osmium::Node& node, std::string name, std::string type) {
-        try {
-            std::string wkb = m_factory.create_point(node);
-            if (name.empty()) name = "Unknown " + type;
-            m_work->exec_prepared("insert_hub", name, type, wkb, 0.1);
-            check_commit();
-        } catch (...) {}
-    }
-
-    void save_route(const osmium::Way& way, std::string name, std::string type, std::string json) {
-        try {
-            std::string wkb = m_factory.create_linestring(way);
-            if (name.empty()) name = "Unnamed " + type;
-            m_work->exec_prepared("insert_route", name, type, wkb, json);
-            check_commit();
-        } catch (...) {}
-    }
-
-    void save_chokepoint_linear(const osmium::Way& way, std::string name, std::string type) {
-        try {
-            std::string wkb = m_factory.create_linestring(way);
-            if (name.empty()) name = "Unnamed " + type;
-            m_work->exec_prepared("insert_choke", name, type, wkb, 0.0);
-            check_commit();
-        } catch (...) {}
-    }
-
-    void save_chokepoint_area(const osmium::Area& area, std::string name, std::string type, float weight) {
-        try {
-            std::string wkb = m_factory.create_multipolygon(area); // SQL uses Centroid
-            if (name.empty()) name = "Unnamed " + type;
-            m_work->exec_prepared("insert_choke", name, type, wkb, weight);
-            check_commit();
-        } catch (...) {}
-    }
-
-    void save_chokepoint_node(const osmium::Node& node, std::string name, std::string type) {
-        try {
-            std::string wkb = m_factory.create_point(node);
-            if (name.empty()) name = "Unnamed " + type;
-            m_work->exec_prepared("insert_choke", name, type, wkb, 0.0);
-            check_commit();
-        } catch (...) {}
-    }
-
-    void check_commit() {
+    void commit_if_needed() {
         if (++m_counter >= BATCH_SIZE) {
-            commit_batch();
-            std::cout << "." << std::flush;
+            m_work->commit();
+            reset_transaction();
         }
     }
 };
 
-int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <planet-latest.osm.pbf>" << std::endl;
-        return 1;
+// --- LOGIC GATES ---
+
+void process_element_assets_hubs(const json& elem, DatabaseHandler& db) {
+    if (!elem.contains("tags")) return;
+    auto tags = elem["tags"];
+    long long id = elem["id"].get<long long>();
+
+    double lat = 0, lon = 0;
+    if (elem.contains("center")) {
+        lat = elem["center"]["lat"]; lon = elem["center"]["lon"];
+    } else if (elem.contains("lat") && elem.contains("lon")) {
+        lat = elem["lat"]; lon = elem["lon"];
+    } else return;
+
+    std::string name = get_tag(tags, "name", "Unknown");
+    std::string landuse = get_tag(tags, "landuse");
+    std::string industrial = get_tag(tags, "industrial");
+    std::string resource = get_tag(tags, "resource");
+    std::string man_made = get_tag(tags, "man_made");
+    std::string power = get_tag(tags, "power");
+    std::string railway = get_tag(tags, "railway");
+
+    // --- OSINT EXTRACTION ---
+    json metadata = json::object();
+    if (tags.contains("operator")) metadata["operator"] = tags["operator"];
+    if (tags.contains("brand")) metadata["brand"] = tags["brand"];
+    if (tags.contains("company")) metadata["company"] = tags["company"];
+    if (tags.contains("wikidata")) metadata["wikidata"] = tags["wikidata"];
+    std::string metadata_str = metadata.dump();
+
+    // 1. Assets
+    if (landuse == "quarry" || industrial == "mine" || industrial == "mining" || man_made == "offshore_platform") {
+        std::string comms = resource.empty() ? "{Unknown}" : "{" + resource + "}";
+        db.execute_asset(name, "mine", comms, lon, lat, metadata_str);
+    }
+    else if (industrial == "refinery" || industrial == "oil" || industrial == "chemical") {
+        db.execute_asset(name, "refinery", "{}", lon, lat, metadata_str);
+    }
+    else if (industrial == "smelter" || industrial == "aluminium_smelting" || has_tag_value(tags, "product", "metal")) {
+        db.execute_asset(name, "smelter", "{}", lon, lat, metadata_str);
+    }
+    
+    // 2. Hubs
+    else if (power == "plant") {
+        db.execute_hub(id, name, "power_plant", lon, lat, 1.0f); 
+    }
+    else if (industrial == "port" || get_tag(tags, "harbour") == "yes") {
+        db.execute_hub(id, name, "port", lon, lat, 1.0f); 
+    }
+    else if (railway == "yard") {
+        db.execute_hub(id, name, "rail_node", lon, lat, 0.8f); 
+    }
+    else if (power == "substation") {
+        db.execute_hub(id, name, "substation", lon, lat, 0.5f); 
+    }
+    else if (get_tag(tags, "building") == "warehouse" || industrial == "logistics" || industrial == "factory") {
+        db.execute_hub(id, name, "distribution", lon, lat, 0.3f); 
+    }
+    else if (man_made == "storage_tank") {
+        db.execute_hub(id, name, "energy_terminal", lon, lat, 0.8f); 
+    }
+    else if (get_tag(tags, "aeroway") == "aerodrome") {
+        db.execute_hub(id, name, "airport", lon, lat, 1.0f); 
+    }
+}
+
+void process_element_routes_chokes(const json& elem, DatabaseHandler& db) {
+    if (elem["type"] != "way" || !elem.contains("tags") || !elem.contains("geometry")) return;
+    
+    auto tags = elem["tags"];
+    long long osm_id = elem["id"].get<long long>();
+    long long id = osm_id % 9000000000000000000LL; 
+    std::string name = get_tag(tags, "name", "Unknown Route");
+
+    std::stringstream wkt;
+    wkt << "LINESTRING(";
+    auto geom_arr = elem["geometry"];
+    if (geom_arr.size() < 2) return;
+    
+    for (size_t i = 0; i < geom_arr.size(); ++i) {
+        wkt << geom_arr[i]["lon"].get<double>() << " " << geom_arr[i]["lat"].get<double>();
+        if (i < geom_arr.size() - 1) wkt << ",";
+    }
+    wkt << ")";
+    std::string wkt_str = wkt.str();
+
+    // 3. Routes & Chokepoints
+    if (has_tag_value(tags, "highway", "motorway") || has_tag_value(tags, "highway", "trunk")) {
+        db.execute_route(id, name, "road", wkt_str, "{}");
+    }
+    else if (get_tag(tags, "railway") == "rail") {
+        db.execute_route(id, name, "rail", wkt_str, "{}");
+    }
+    else if (get_tag(tags, "power") == "line") {
+        db.execute_route(id, "Power Line", "power", wkt_str, "{}");
+    }
+    else if (get_tag(tags, "man_made") == "pipeline") {
+        json state; state["substance"] = get_tag(tags, "substance");
+        db.execute_route(id, "Pipeline", "pipeline", wkt_str, state.dump());
+    }
+    else if (get_tag(tags, "bridge") == "yes") {
+        db.execute_choke(name, "bridge", wkt_str, 0.0f);
+    }
+}
+
+// --- CYCLE EXECUTION ---
+
+void run_ingest_cycle() {
+    DatabaseHandler db;
+    
+    int lat_step = 30;
+    int lon_step = 30;
+    int total_sectors = (180 / lat_step) * (360 / lon_step);
+
+    std::cout << "\n=======================================================" << std::endl;
+    std::cout << "[OSM INGEST] Commencing Global Grid Extraction (" << total_sectors << " Micro-Sectors)" << std::endl;
+    std::cout << "=======================================================\n" << std::endl;
+
+    int sector = 1;
+    for (int lat = -90; lat < 90; lat += lat_step) {
+        for (int lon = -180; lon < 180; lon += lon_step) {
+            
+            std::string bbox = std::to_string(lat) + "," + std::to_string(lon) + "," + 
+                               std::to_string(lat + lat_step) + "," + std::to_string(lon + lon_step);
+                               
+            std::cout << "\n[SECTOR " << sector << "/" << total_sectors << "] BBOX: [" << bbox << "]" << std::endl;
+
+            auto fetch_with_retries = [&](const std::string& query, const std::string& phase) -> std::string {
+                int max_retries = 3;
+                for (int attempt = 1; attempt <= max_retries; ++attempt) {
+                    std::string result = fetch_overpass_data(query, phase);
+                    
+                    if (!result.empty() && result[0] == '{') return result;
+                    
+                    std::cerr << "   -> [" << phase << "] Attempt " << attempt << " failed. ";
+                    if (attempt < max_retries) {
+                        int backoff = 10 * attempt; 
+                        std::cerr << "Retrying in " << backoff << "s..." << std::endl;
+                        std::this_thread::sleep_for(std::chrono::seconds(backoff));
+                    }
+                }
+                std::cerr << "   -> [" << phase << "] Skipping sector after 3 failed attempts." << std::endl;
+                return "";
+            };
+
+            // --- PHASE 1: ASSETS & HUBS ---
+            std::string query_points = "[out:json][timeout:180][bbox:" + bbox + "];\n"
+                "(\n"
+                "  nwr[\"landuse\"=\"quarry\"];\n"
+                "  nwr[\"industrial\"~\"^(mine|mining|refinery|oil|chemical|smelter|aluminium_smelting|port|logistics|factory)$\"];\n"
+                "  nwr[\"man_made\"=\"offshore_platform\"];\n"
+                "  nwr[\"man_made\"=\"storage_tank\"];\n"
+                "  nwr[\"product\"~\"metal\"];\n"
+                "  nwr[\"power\"~\"^(plant|substation)$\"];\n"
+                "  nwr[\"harbour\"=\"yes\"];\n"
+                "  nwr[\"railway\"=\"yard\"];\n"
+                "  nwr[\"building\"=\"warehouse\"];\n"
+                "  nwr[\"aeroway\"=\"aerodrome\"];\n"
+                ");\n"
+                "out center;";
+            
+            std::string resp_pts = fetch_with_retries(query_points, "P1:Assets");
+            if (!resp_pts.empty()) {
+                try {
+                    auto j = json::parse(resp_pts);
+                    if (j.contains("elements")) {
+                        auto elements = j["elements"];
+                        for (const auto& elem : elements) process_element_assets_hubs(elem, db);
+                        db.force_commit();
+                        std::cout << "   -> Indexed " << elements.size() << " Assets/Hubs." << std::endl;
+                    }
+                } catch (...) {}
+            }
+
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+
+            // --- PHASE 2 DECOUPLED: ROUTES & CHOKEPOINTS ---
+            // Breaking up the massive line request to prevent memory limits on the Overpass API side
+            
+            std::vector<std::pair<std::string, std::string>> line_queries = {
+                {"P2:Roads_Bridges", "[out:json][timeout:180][bbox:" + bbox + "];\n(\nway[\"highway\"~\"^(motorway|trunk)$\"];\nway[\"bridge\"=\"yes\"];\n);\nout geom;"},
+                {"P2:Railways", "[out:json][timeout:180][bbox:" + bbox + "];\n(way[\"railway\"=\"rail\"];);\nout geom;"},
+                {"P2:PowerGrid", "[out:json][timeout:180][bbox:" + bbox + "];\n(way[\"power\"=\"line\"];);\nout geom;"},
+                {"P2:Pipelines", "[out:json][timeout:180][bbox:" + bbox + "];\n(way[\"man_made\"=\"pipeline\"];);\nout geom;"}
+            };
+
+            for (const auto& lq : line_queries) {
+                std::string resp_lines = fetch_with_retries(lq.second, lq.first);
+                if (!resp_lines.empty()) {
+                    try {
+                        auto j = json::parse(resp_lines);
+                        if (j.contains("elements")) {
+                            auto elements = j["elements"];
+                            for (const auto& elem : elements) process_element_routes_chokes(elem, db);
+                            db.force_commit();
+                            std::cout << "   -> Indexed " << elements.size() << " " << lq.first << "." << std::endl;
+                        }
+                    } catch (...) {}
+                }
+                // Sleep between sub-phases to cool down connection
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+            }
+
+            sector++;
+        }
     }
 
-    std::cout << "[TOTAL AWARENESS] Initializing Global Logistics Scanner..." << std::endl;
-    std::cout << "[TARGET] " << argv[1] << std::endl;
+    std::cout << "\n=======================================================" << std::endl;
+    std::cout << "GLOBAL INGEST SUMMARY" << std::endl;
+    std::cout << "Successfully Saved: " << stats_saved << " items." << std::endl;
+    std::cout << "Database Skips/Errors: " << stats_db_errors << std::endl;
+    std::cout << "=======================================================\n" << std::endl;
     
-    try {
-        // Read Nodes (for pumps/cranes), Ways (Routes), Relations (Multipolygons)
-        osmium::io::File input_file{argv[1]};
-        osmium::io::Reader reader{input_file, osmium::osm_entity_bits::node | osmium::osm_entity_bits::way | osmium::osm_entity_bits::relation};
+    stats_saved = 0;
+    stats_db_errors = 0;
+}
 
-        MegaLogisticsHandler handler;
-        
-        osmium::area::Assembler::config_type assembler_config;
-        osmium::area::MultipolygonManager<osmium::area::Assembler> mp_manager{assembler_config};
-        
-        std::cout << "[PHASE 1] Assembling Geometry (Relations)..." << std::endl;
-        
-        // FIX: Manual read loop to avoid missing header dependency
-        while (osmium::memory::Buffer buffer = reader.read()) {
-            osmium::apply(buffer, mp_manager);
+int main() {
+    std::cout << "[OSM INGEST] Service Online. Booting Overpass Ingestor." << std::endl;
+    
+    std::this_thread::sleep_for(std::chrono::seconds(20));
+
+    while (true) {
+        try {
+            run_ingest_cycle();
+        } catch (const std::exception& e) {
+            std::cerr << "[OSM INGEST][FATAL] Ingest Cycle Crashed: " << e.what() << std::endl;
         }
-        reader.close();
-
-        std::cout << "[PHASE 2] Ingesting The World..." << std::endl;
-        osmium::io::Reader reader2{input_file};
         
-        osmium::apply(reader2, mp_manager.handler([&handler](const osmium::memory::Buffer& area_buffer) {
-            osmium::apply(area_buffer, handler);
-        }));
-        
-        reader2.close();
-        std::cout << "\n[SUCCESS] Planetary Ingest Complete." << std::endl;
-
-    } catch (const std::exception& e) {
-        std::cerr << "[CRITICAL ERROR] " << e.what() << std::endl;
-        return 1;
+        std::cout << "[OSM INGEST] Cycle Complete. Entering standby for 1 week (168 Hours)..." << std::endl;
+        std::this_thread::sleep_for(std::chrono::hours(168));
     }
     return 0;
 }

@@ -85,6 +85,7 @@ RUN rm -rf build && mkdir build && cd build && \
     make -j$(nproc)
 
 RUN echo "#!/bin/bash\n\
+# Start Sensors\n\
 ./build/seismic_engine &\n\
 ./build/aviation_ingest &\n\
 ./build/ais_ingest &\n\
@@ -93,7 +94,21 @@ RUN echo "#!/bin/bash\n\
 ./build/fred_macro &\n\
 ./build/filings_ingest &\n\
 ./build/src/data_sources/med_streams/radio_supervisor &\n\
-./build/twitter_recon" > start.sh
+./build/twitter_recon &\n\
+\n\
+# Map Ingestion Logic\n\
+MAP_FILE=\$(find /shared -name '*.pbf' | head -n 1)\n\
+if [ -n \"\$MAP_FILE\" ]; then\n\
+    echo \"[SYSTEM] Found map file: \$MAP_FILE. Starting automated ingest...\"\n\
+    # Wait for DB to be ready before hammering it with map data\n\
+    sleep 10\n\
+    ./build/osm_ingest \"\$MAP_FILE\"\n\
+else\n\
+    echo \"[SYSTEM] No .pbf map file found in /shared. Skipping OSM ingest.\"\n\
+fi\n\
+\n\
+# Keep container alive\n\
+wait" > start.sh
 
 RUN chmod +x start.sh
 CMD ["./start.sh"]

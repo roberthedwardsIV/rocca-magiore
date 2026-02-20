@@ -149,6 +149,7 @@ def check_loitering(mmsi, lat, lon, speed, conn):
     return None
 
 def start_maritime_brain():
+    global r_in, r_out
     print("[MARITIME BRAIN] Online. Initializing Watchlist...", flush=True)
     refresh_watchlist()
     conn = get_db_connection()

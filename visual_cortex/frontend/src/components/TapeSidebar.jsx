@@ -1,101 +1,116 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Activity, Terminal, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
+import { Activity, Radio, Flame, Waves, Filter, DollarSign, Zap } from 'lucide-react';
+
+const formatTime = (ts) => {
+  if (!ts) return "--:--:--";
+  return new Date(ts).toLocaleTimeString('en-US', { hour12: false });
+};
 
 export default function TapeSidebar({ signals }) {
+  const [filter, setFilter] = useState('ALL'); // ALL, EXEC, INTEL, INFRA
+
+  const filteredSignals = signals.filter(sig => {
+    if (filter === 'ALL') return true;
+    if (filter === 'EXEC') return (sig.sym || sig.symbol);
+    if (filter === 'INTEL') return sig.source === 'radio' || sig.source === 'twitter';
+    if (filter === 'INFRA') return sig.entity_type === 'earthquake' || sig.entity_type === 'wildfire' || sig.category === 'infrastructure';
+    return true;
+  });
+
   return (
     <div className="flex flex-col h-full bg-gunmetal border-l border-gray-800 font-mono text-xs">
       
-      {/* HEADER */}
-      <div className="p-3 border-b border-gray-700 bg-void flex items-center justify-between">
-        <div className="flex items-center gap-2 text-cyan">
-          <Activity size={16} />
-          <span className="font-bold tracking-wider">STRATEGY.TAPE</span>
+      {/* 1. STICKY HEADER & FILTERS */}
+      <div className="p-3 border-b border-gray-800 bg-void">
+        <div className="flex justify-between items-center mb-3">
+          <span className="text-cyan font-bold tracking-wider flex items-center gap-2">
+            <Activity size={14} /> LIVE FEED
+          </span>
+          <span className="text-[10px] text-green-500 animate-pulse">● ONLINE</span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-          <span className="text-gray-500">LIVE</span>
+        
+        <div className="flex gap-1">
+          {['ALL', 'EXEC', 'INTEL', 'INFRA'].map(f => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-2 py-1 rounded text-[9px] font-bold transition-colors flex-1 
+                ${filter === f ? 'bg-cyan text-void' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+            >
+              {f}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* SIGNAL FEED (SCROLLABLE) */}
+      {/* 2. THE FEED */}
       <div className="flex-1 overflow-y-auto p-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700">
         <AnimatePresence initial={false}>
-          {signals.map((sig, i) => (
-            <motion.div
-              key={sig.id || i}
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="relative p-3 bg-void border border-gray-800 rounded hover:border-gray-600 transition-colors group"
-            >
-              {/* Signal Header */}
-              <div className="flex justify-between items-start mb-2">
-                <div className="flex flex-col">
-                  <span className="text-lg font-bold text-white">{sig.sym}</span>
-                  <span className="text-[10px] text-gray-500">{new Date(sig.ts).toLocaleTimeString()}</span>
-                </div>
-                <div className={`px-2 py-1 rounded text-[10px] font-bold flex items-center gap-1 ${
-                  sig.side === 'BUY' ? 'bg-cyan/10 text-cyan' : 'bg-crimson/10 text-crimson'
-                }`}>
-                  {sig.side === 'BUY' ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
-                  {sig.side}
-                </div>
-              </div>
+          {filteredSignals.map((sig, i) => {
+            const isTrade = sig.sym || sig.symbol;
+            const isNews = sig.source === 'radio';
+            const isEvent = sig.entity_type === 'earthquake' || sig.entity_type === 'wildfire';
 
-              {/* Data Grid */}
-              <div className="grid grid-cols-2 gap-2 text-[10px] mb-2 text-gray-400">
-                <div>
-                  <span className="block text-gray-600">FAIR VAL</span>
-                  <span className="text-white font-semibold">${sig.fv?.toFixed(2)}</span>
-                </div>
-                <div>
-                  <span className="block text-gray-600">MARKET</span>
-                  <span className="text-white font-semibold">${sig.mkt?.toFixed(2)}</span>
-                </div>
-                <div>
-                  <span className="block text-gray-600">RISK</span>
-                  <span className="text-amber">${sig.risk?.toFixed(0)}</span>
-                </div>
-                <div>
-                  <span className="block text-gray-600">Z-SCORE</span>
-                  <span className="text-white">{( (sig.fv - sig.mkt)/sig.vol ).toFixed(2)}σ</span>
-                </div>
-              </div>
+            return (
+              <motion.div
+                key={sig.id || sig.entity_id || i}
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, height: 0 }}
+                className={`relative p-3 border rounded border-l-2 transition-all cursor-default
+                  ${isTrade ? 'bg-yellow-900/10 border-yellow-600/50 border-l-yellow-500' : ''}
+                  ${isNews ? 'bg-blue-900/10 border-blue-600/50 border-l-blue-500' : ''}
+                  ${isEvent ? 'bg-red-900/10 border-red-600/50 border-l-red-500' : ''}
+                  ${!isTrade && !isNews && !isEvent ? 'bg-gray-800/30 border-gray-700' : ''}
+                `}
+              >
+                {/* EXECUTION CARD */}
+                {isTrade && (
+                  <div>
+                    <div className="flex justify-between text-yellow-500 mb-1">
+                      <span className="font-bold">{sig.action} {sig.sym || sig.symbol}</span>
+                      <span className="opacity-70">{formatTime(sig.ts || sig.timestamp)}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-gray-400">
+                      <div>Price: <span className="text-white">${sig.mkt?.toFixed(2)}</span></div>
+                      <div>Conf: <span className="text-white">{(sig.conf * 100).toFixed(0)}%</span></div>
+                    </div>
+                  </div>
+                )}
 
-              {/* Confidence Meter */}
-              <div className="w-full bg-gray-800 h-1 mt-2 rounded-full overflow-hidden">
-                <div 
-                  className={`h-full ${sig.conf > 0.8 ? 'bg-cyan' : 'bg-amber'}`} 
-                  style={{ width: `${sig.conf * 100}%` }}
-                />
-              </div>
-            </motion.div>
-          ))}
+                {/* INTEL CARD */}
+                {isNews && (
+                  <div>
+                    <div className="flex justify-between text-blue-400 mb-1">
+                      <span className="font-bold flex items-center gap-1"><Radio size={10} /> {sig.station}</span>
+                      <span className="opacity-70">{formatTime(Date.now())}</span>
+                    </div>
+                    <p className="text-gray-300 italic leading-tight">"{sig.text}"</p>
+                  </div>
+                )}
+
+                {/* EVENT CARD */}
+                {isEvent && (
+                  <div>
+                    <div className="flex justify-between text-red-500 mb-1">
+                      <span className="font-bold uppercase flex items-center gap-1">
+                        {sig.entity_type === 'earthquake' ? <Waves size={10}/> : <Flame size={10}/>}
+                        {sig.entity_type}
+                      </span>
+                      <span className="opacity-70">{formatTime(sig.timestamp)}</span>
+                    </div>
+                    <div className="text-gray-300">
+                      {sig.entity_type === 'earthquake' ? `Mag: ${sig.data.mag.toFixed(1)}` : `FRP: ${sig.data.frp.toFixed(1)} MW`}
+                    </div>
+                  </div>
+                )}
+
+              </motion.div>
+            );
+          })}
         </AnimatePresence>
-        
-        {signals.length === 0 && (
-          <div className="text-center text-gray-600 mt-10 italic">
-            Waiting for thalamus signals...
-          </div>
-        )}
       </div>
-
-      {/* SYSTEM LOG CONSOLE (BOTTOM) */}
-      <div className="h-1/3 border-t border-gray-700 bg-black p-2 overflow-hidden flex flex-col">
-        <div className="flex items-center gap-2 text-gray-500 mb-2 border-b border-gray-800 pb-1">
-          <Terminal size={12} />
-          <span>SYSTEM.LOG</span>
-        </div>
-        <div className="flex-1 overflow-y-auto font-mono text-[10px] text-gray-400 space-y-1">
-          <div className="text-cyan"> [SYS] Visual Cortex Online...</div>
-          <div> [NET] Connected to Corpus Callosum (Redis)</div>
-          <div className="text-amber"> [WARN] Latency spike detected in aviation_ingest (140ms)</div>
-          <div> [INFO] Maritime module sync complete.</div>
-        </div>
-      </div>
-
     </div>
   );
 }

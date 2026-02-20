@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <set>
+#include <atomic>
 
 using json = nlohmann::json;
 
@@ -117,6 +118,8 @@ public:
 
 class MarketDataFeed : public EWrapperStub {
 public:
+    std::atomic<bool> is_ready{false}; // Handshake flag
+
     MarketDataFeed() : client(new EClientSocket(this, &OSSignal)), reader(client.get(), &OSSignal) {
         redis_ctx = redisConnect("corpus_callosum", 6379);
         if (!redis_ctx || redis_ctx->err) {
@@ -128,23 +131,19 @@ public:
         if (redis_ctx) redisFree(redis_ctx);
     }
 
-    void connect() {
-        //    Port 4001 is standard for Gateway; use 7496 if using TWS Live, 7497 for TWS Paper
-        if (client->eConnect("ibkr_gateway", 4001, 100)) {
-            std::cout << "[MARKET FEED] Connected to IBKR Gateway." << std::endl;
+    bool connect() {
+        // Port 4001 is standard for Gateway; use 7496 if using TWS Live, 7497 for TWS Paper
+        if (client->eConnect("127.0.0.1", 4002, 100)) {
+            std::cout << "[MARKET FEED] Connected to IBKR Gateway. Awaiting Handshake..." << std::endl;
 
             // --- CONFIGURATION FOR MIXED DATA PERMISSIONS ---
             // Type 1 = Live Streaming (Requires full subscriptions)
             // Type 3 = Delayed (15-20 min lag, usually free)
-            // Type 4 = Delayed-Frozen (Best for testing; gives delayed live + static close data)
-            // CURRENT SETTING: Type 3 (Delayed)
-
             client->reqMarketDataType(3); 
             std::cout << "[MARKET FEED] Data Mode: DELAYED (Type 3) - Ensuring Futures Data Flow." << std::endl;
-            
-            // FUTURE UPGRADE: 
-            // client->reqMarketDataType(1); 
-            // ------------------------------------------------
+
+            // THE FIX: Start the EReader thread to actually pull data from the TCP socket!
+            reader.start();
 
             std::thread([this]() {
                 while (client->isConnected()) {
@@ -153,13 +152,32 @@ public:
                 }
             }).detach();
             
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            // Block until IBKR confirms readiness via nextValidId
+            int wait_loops = 0;
+            while (!is_ready && wait_loops < 50) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                wait_loops++;
+            }
+
+            if (!is_ready) {
+                std::cerr << "[MARKET FEED] Handshake timeout. Gateway might still be booting." << std::endl;
+                client->eDisconnect();
+                return false;
+            }
             
             load_targets_and_subscribe();
+            return true;
 
         } else {
             std::cerr << "[MARKET FEED] IBKR Connection Failed. Is the Gateway running?" << std::endl;
+            return false;
         }
+    }
+
+    // Capture the handshake from the API
+    void nextValidId(OrderId orderId) override {
+        is_ready = true; // Unlocks the connection block
+        std::cout << "[IKBR MARKET FEED] Handshake Complete. Ready to subscribe." << std::endl;
     }
 
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override {
@@ -213,9 +231,10 @@ public:
     }
 
     void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override {
-    if (errorCode == 2104 || errorCode == 2106) return;
-    std::cerr << "[IBKR ERROR] Id: " << id << " Code: " << errorCode << " Msg: " << errorMsg << std::endl;
-}
+        // Ignore expected/benign API connection messages
+        if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158) return;
+        std::cerr << "[IBKR ERROR] Id: " << id << " Code: " << errorCode << " Msg: " << errorMsg << std::endl;
+    }
     
 private:
     std::unique_ptr<EClientSocket> client;
@@ -231,15 +250,23 @@ private:
             pqxx::result R = W.exec("SELECT symbol, instrument_type, exchange, metadata FROM ticker_registry WHERE active = TRUE");
             int reqId = 1000;
             std::cout << "[IKBR MARKET FEED] Loading " << R.size() << " targets from DB..." << std::endl;
+            
             for (auto row : R) {
                 Contract c;
                 c.symbol = row["symbol"].as<std::string>();
                 c.exchange = row["exchange"].as<std::string>();
                 c.currency = "USD";
                 std::string type = row["instrument_type"].as<std::string>();
+                
                 if (type == "future") {
                     c.secType = "FUT";
                     c.lastTradeDateOrContractMonth = "202612";
+                } else if (type == "commodity_spot") {
+                    // TRANSLATE PSEUDO-SPOTS TO VALID IBKR DATA FEEDS
+                    if (c.symbol == "XAU_USD") { c.symbol = "XAUUSD"; c.secType = "CMDTY"; c.exchange = "SMART"; }
+                    else if (c.symbol == "LME_CU") { c.symbol = "HG"; c.secType = "CONTFUT"; c.exchange = "COMEX"; }
+                    else if (c.symbol == "WTI_SPOT") { c.symbol = "CL"; c.secType = "CONTFUT"; c.exchange = "NYMEX"; }
+                    else if (c.symbol == "LITH_CARB") { c.symbol = "LIT"; c.secType = "STK"; c.exchange = "SMART"; }
                 } else if (type == "option") {
                     c.secType = "OPT";
                 } else {
@@ -247,9 +274,12 @@ private:
                     c.exchange = "SMART"; 
                     c.primaryExchange = row["exchange"].as<std::string>();
                 }
+                
                 client->reqMktData(reqId, c, "100,101,106", false, false, TagValueListSPtr());
-                id_map[reqId] = c.symbol;
-                std::cout << "   -> Subscribed: " << c.symbol << " (" << type << ")" << std::endl;
+                
+                // Map the original ID back for our signals
+                id_map[reqId] = row["symbol"].as<std::string>(); 
+                std::cout << "   -> Subscribed: " << c.symbol << " (" << c.secType << ")" << std::endl;
                 reqId++;
             }
         } catch (const std::exception &e) {
@@ -260,7 +290,16 @@ private:
 
 int main() {
     MarketDataFeed feed;
-    feed.connect();
+    
+    // Single connection loop to prevent double connection attempts
+    while (true) {
+        if (feed.connect()) {
+            break; 
+        }
+        std::cerr << "[MARKET FEED] Connection failed. Retrying in 10 seconds..." << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+    }
+    
     while(true) {
         std::this_thread::sleep_for(std::chrono::seconds(60));
     }

@@ -104,15 +104,18 @@ std::set<std::string> load_watchlist() {
         pqxx::connection C(DB_CONN);
         pqxx::work W(C);
         pqxx::result R = W.exec("SELECT symbol, metadata->>'company' as name FROM ticker_registry WHERE active = TRUE");
-        
         for (auto row : R) {
-            // We watch for the Symbol (if SEC puts it in title) OR the Company Name
-            watchlist.insert(row["symbol"].as<std::string>());
+            // FIXED: Check for NULLs before converting
+            if (!row["symbol"].is_null()) {
+                watchlist.insert(row["symbol"].as<std::string>());
+            }
             
-            std::string name = row["name"].as<std::string>();
-            // Basic normalization (upper case)
-            std::transform(name.begin(), name.end(), name.begin(), ::toupper);
-            watchlist.insert(name);
+            if (!row["name"].is_null()) {
+                std::string name = row["name"].as<std::string>();
+                // Basic normalization (upper case)
+                std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+                watchlist.insert(name);
+            }
         }
     } catch (const std::exception& e) {
         std::cerr << "[FILINGS] DB Error: " << e.what() << std::endl;

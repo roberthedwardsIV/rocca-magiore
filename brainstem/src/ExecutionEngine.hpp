@@ -15,6 +15,7 @@
 #include <memory>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include <atomic>
 
 using json = nlohmann::json;
 
@@ -29,13 +30,13 @@ class ExecutionEngine : public EWrapper {
 public:
     ExecutionEngine();
     ~ExecutionEngine();
-
+    std::atomic<bool> is_ready{false};
     bool connect(const char* host, int port, int clientId);
     void process_messages();
     void handle_thalamus_signal(const json& signal);
 
     // --- LOGIC SWITCH ---
-    bool paper_mode = true; 
+    bool paper_mode = false; 
 
     // --- EXECUTION HELPERS ---
     // Helper to create the Bracket (Parent + Stop + Target) bundle
