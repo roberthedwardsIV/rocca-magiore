@@ -54,8 +54,8 @@ export default function PanopticonMap({ assets, hubs, lines, chokepoints, onFetc
   const loadMapImages = async (map) => {
     const iconConfigs = [
       // Format: { id: 'icon_name', svg: Raw_SVG_String }
-      { id: 'plane', svg: ICONS.plane('#ffffff') },
-      { id: 'ship', svg: ICONS.ship('#3b82f6') },
+      { id: 'plane', svg: ICONS.plane('#ef4444') },
+      { id: 'ship', svg: ICONS.ship('#ef4444') },
       { id: 'mine-healthy', svg: ICONS.mine('#22d3ee') },
       { id: 'mine-critical', svg: ICONS.mine('#ef4444') },
       { id: 'refinery-healthy', svg: ICONS.refinery('#22d3ee') },
@@ -175,13 +175,13 @@ export default function PanopticonMap({ assets, hubs, lines, chokepoints, onFetc
   const vehiclesGeoJson = useMemo(() => {
     let features = [];
     if (filters.planes) {
-      features.push(...Object.values(planes).map(p => ({
+      features.push(...Object.values(planes).slice(0, 400).map(p => ({
         type: 'Feature', geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
         properties: { type: 'plane', id: p.icao, icon: 'plane', heading: p.heading || 0 }
       })));
     }
     if (filters.ships) {
-      features.push(...Object.values(ships).map(s => ({
+      features.push(...Object.values(ships).slice(0, 400).map(s => ({
         type: 'Feature', geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
         properties: { type: 'ship', id: s.mmsi, icon: 'ship', heading: s.heading || 0 }
       })));
@@ -261,7 +261,7 @@ export default function PanopticonMap({ assets, hubs, lines, chokepoints, onFetc
             <Source id="vehicles-source" type="geojson" data={vehiclesGeoJson}>
               <Layer id="vehicles-layer" type="symbol" layout={{
                 'icon-image': ['get', 'icon'],
-                'icon-size': 0.5,
+                'icon-size': 0.05,
                 'icon-allow-overlap': true,
                 'icon-rotate': ['get', 'heading'], // Vehicles physically turn on the map
                 'icon-rotation-alignment': 'map'

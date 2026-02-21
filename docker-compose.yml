@@ -162,7 +162,19 @@ services:
       - rocco_net
     ports:
       - "3000:3000"
-      
+
+  # ------------------- Database Web GUI -------------------
+  db_viewer:
+    image: adminer
+    container_name: rocco_db_viewer
+    restart: always
+    ports:
+      - "8081:8080"
+    depends_on:
+      - hippocampus
+    networks:
+      - rocco_net
+
 volumes:
   postgres_data:
 

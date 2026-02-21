@@ -8,7 +8,7 @@
 #include "IB/Contract.h"
 #include "IB/Order.h"
 #include "IB/Decimal.h"
-#include "managers/RiskManager.hpp" // <--- ADDED: Risk Integration
+#include "managers/RiskManager.hpp"
 #include <mutex>
 #include <unordered_map>
 #include <string>
@@ -16,6 +16,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include <atomic>
+#include <hiredis/hiredis.h>
 
 using json = nlohmann::json;
 
@@ -35,42 +36,26 @@ public:
     void process_messages();
     void handle_thalamus_signal(const json& signal);
 
-    // --- LOGIC SWITCH ---
     bool paper_mode = false; 
 
-    // --- EXECUTION HELPERS ---
-    // Helper to create the Bracket (Parent + Stop + Target) bundle
     std::vector<Order> bracket_order(int parentId, const std::string& action, double qty, double limit_price, double stop_price, double take_profit);
-    
-    // Core Execution Router (UPDATED SIGNATURE for Bracket Support)
     void place_order(const std::string& symbol, const std::string& action, double quantity, double limit_price, double stop_price, double take_profit);
 
-    // --- IBKR EWrapper Overrides ---
     void nextValidId(OrderId orderId) override;
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override;
-    
-    // Error handling
     void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override;
-    
-    // Order status
-    void orderStatus(OrderId orderId, const std::string& status, Decimal filled, Decimal remaining, 
-                     double avgFillPrice, int permId, int parentId, double lastFillPrice, 
-                     int clientId, const std::string& whyHeld, double mktCapPrice) override;
+    void orderStatus(OrderId orderId, const std::string& status, Decimal filled, Decimal remaining, double avgFillPrice, int permId, int parentId, double lastFillPrice, int clientId, const std::string& whyHeld, double mktCapPrice) override;
 
-    // Tick Size
+    void updateAccountValue(const std::string& key, const std::string& val, const std::string& currency, const std::string& accountName) override;
+    void updatePortfolio(const Contract& contract, Decimal position, double marketPrice, double marketValue, double averageCost, double unrealizedPNL, double realizedPNL, const std::string& accountName) override;
+
     void tickSize(TickerId tickerId, TickType field, Decimal size) override {}
-    
-    // --- STUBS (Required for EWrapper abstract base class) ---
     void tickString(TickerId tickerId, TickType field, const std::string& value) override {}
     void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
-    void tickEFP(TickerId tickerId, TickType tickType, double basisPoints, const std::string& formattedBasisPoints,
-                 double totalDividends, int holdDays, const std::string& futureLastTradeDate, double dividendImpact,
-                 double dividendsToLastTradeDate) override {}
+    void tickEFP(TickerId tickerId, TickType tickType, double basisPoints, const std::string& formattedBasisPoints, double totalDividends, int holdDays, const std::string& futureLastTradeDate, double dividendImpact, double dividendsToLastTradeDate) override {}
     void tickOptionComputation(TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta, double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}
     void winError(const std::string& str, int lastError) override {}
     void connectionClosed() override {}
-    void updateAccountValue(const std::string& key, const std::string& val, const std::string& currency, const std::string& accountName) override {}
-    void updatePortfolio(const Contract& contract, Decimal position, double marketPrice, double marketValue, double averageCost, double unrealizedPNL, double realizedPNL, const std::string& accountName) override {}
     void updateAccountTime(const std::string& timeStamp) override {}
     void accountDownloadEnd(const std::string& accountName) override {}
     void contractDetails(int reqId, const ContractDetails& contractDetails) override {}
@@ -156,19 +141,23 @@ private:
     OrderId nextOrderId;
     std::mutex engine_mtx;
 
-    // --- INTERNAL STATE ---
     std::unordered_map<std::string, int> symbol_to_tickerid;
     std::unordered_map<int, std::string> tickerid_to_symbol;
     std::unordered_map<std::string, MarketData> market_cache;
     std::unordered_map<std::string, double> active_positions;
+    
+    // --- THE FIX: Declare pending_orders map to track Missed Alpha ---
+    std::unordered_map<int, json> pending_orders; 
 
-    // --- SUB-COMPONENTS ---
-    RiskManager risk_manager; // <--- The Gatekeeper
+    RiskManager risk_manager;
 
-    // --- HELPERS ---
+    redisContext* redis_pub;
+    double current_balance = 0.0;
+    double current_pnl = 0.0;
+
     double calculate_position_size(double price, double volatility);
     Contract resolve_contract(const std::string& symbol);
-    std::string get_sector(const std::string& symbol); // <--- Sector Helper
+    std::string get_sector(const std::string& symbol);
 };
 
 #endif

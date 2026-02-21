@@ -121,6 +121,17 @@ void sync_flights(redisContext* redis) {
                         std::string key = "flight_data:" + icao;
                         redisCommand(redis, "HSET %s lat %f lon %f alt %f vel %f v_rate %f ts %ld", 
                                      key.c_str(), lat, lon, alt, vel, ver, std::time(nullptr));
+                        redisCommand(redis, "HSET %s lat %f lon %f alt %f vel %f v_rate %f ts %ld", 
+                                     key.c_str(), lat, lon, alt, vel, ver, std::time(nullptr));
+                        redisCommand(redis, "EXPIRE %s 300", key.c_str());
+
+                        // THE FIX: Broadcast to the UI via PubSub
+                        json ui_payload = {
+                            {"icao", icao}, {"callsign", call},
+                            {"lat", lat}, {"lon", lon}, {"heading", 0} // Placeholder heading
+                        };
+                        std::string pub_str = ui_payload.dump();
+                        redisCommand(redis, "PUBLISH global_sky %s", pub_str.c_str());
                         redisCommand(redis, "EXPIRE %s 300", key.c_str());
 
                         count++;

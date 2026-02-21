@@ -63,7 +63,9 @@ void Dispatcher::route_signal(const json& sig) {
         handle_event_signal(sig);
     }
     // 3. PHYSICAL ASSETS
-    else if (type == "mine" || type == "refinery" || type == "smelter") {
+    else if (type == "mine" || type == "refinery" || type == "smelter" || 
+             type == "sand" || type == "aggregate" || type == "clay" || 
+             type == "kaolin" || type == "phosphate") {
         handle_asset_signal(sig);
     }
     // 4. INFRASTRUCTURE: ROUTES
@@ -99,7 +101,8 @@ void Dispatcher::route_signal(const json& sig) {
         handle_ticker_signal(sig);
     }
     else {
-        if (type != "Unknown" && type != "unknown" &&type != "signal" && type != "keepalive") {
+        if (type != "Unknown" && type != "unknown" && type != "signal" && type != "keepalive" &&
+            type != "sand" && type != "aggregate" && type != "clay" && type != "kaolin" && type != "phosphate") {
             std::cerr << "[DISPATCHER] Warning: Unhandled entity type: " << type << std::endl;
         }
     }

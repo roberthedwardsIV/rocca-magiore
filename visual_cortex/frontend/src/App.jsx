@@ -4,12 +4,15 @@ import { Activity, AlertTriangle, ShieldAlert, Cpu, TerminalSquare, X, LineChart
 
 function App() {
   const [worldState, setWorldState] = useState({ assets: [], hubs: [], lines: [], chokepoints: [] });
-  const [pulse, setPulse] = useState({ pnl: 0, avg_health: 1.0, critical_threats: 0, active_events: 0, tickers: [] });
+  const [pulse, setPulse] = useState({ pnl: 0, balance: 0, avg_health: 1.0, critical_threats: 0, active_events: 0, tickers: [] });
   const [liveFeed, setLiveFeed] = useState([]);
   
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
-  const [isQuantOpen, setIsQuantOpen] = useState(false); // NEW: Quant Modal State
-  const [tradeSignals, setTradeSignals] = useState([]);  // NEW: Execution Tape State
+  const [isQuantOpen, setIsQuantOpen] = useState(false);
+  const [tradeSignals, setTradeSignals] = useState([]);
+  
+  // THE FIX: Added the missing state declaration here!
+  const [activePositions, setActivePositions] = useState({}); 
   
   // State to hold our live Docker logs
   const [systemLogs, setSystemLogs] = useState({
@@ -50,6 +53,7 @@ function App() {
         if (data) {
           setPulse({
             pnl: data.pnl || 0,
+            balance: data.balance || 0, 
             avg_health: data.avg_health !== null && data.avg_health !== undefined ? data.avg_health : 1.0,
             critical_threats: data.critical_threats || 0,
             active_events: data.active_events || 0,
@@ -81,9 +85,16 @@ function App() {
           setLiveFeed(prev => [feedItem, ...prev].slice(0, 50));
         }
 
-        // Capture execution signals for the Quant Desk
         if (msg.channel === 'execution_signals') {
-           setTradeSignals(prev => [msg.payload, ...prev].slice(0, 20)); // Keep last 20 trades
+           setTradeSignals(prev => [msg.payload, ...prev].slice(0, 20)); 
+        }
+
+        // Capture portfolio updates from IBKR
+        if (msg.channel === 'state_vectors' && msg.payload.type === 'portfolio_update') {
+           setActivePositions(prev => ({
+             ...prev,
+             [msg.payload.symbol]: msg.payload
+           }));
         }
       } catch (err) {
         console.warn("Non-JSON WebSocket message received:", e.data);
@@ -128,8 +139,8 @@ function App() {
   ];
 
   return (
-    <div className="h-screen w-screen bg-[#0a0f1c] text-slate-200 font-sans overflow-hidden flex flex-col">
-      
+    <div className="h-screen w-screen bg-black text-gray-300 font-mono overflow-hidden flex flex-col">     
+
       {/* GLOBAL CSS OVERRIDE */}
       <style>{`
         .maplibregl-popup-content {
@@ -145,11 +156,11 @@ function App() {
       `}</style>
 
       {/* HEADER */}
-      <div className="h-14 border-b border-slate-800 bg-[#0d1424] flex items-center justify-between px-6 shadow-md z-10">
+      <div className="h-12 border-b border-[#333333] bg-[#050505] flex items-center justify-between px-6 z-10">
         <div className="flex items-center gap-4">
-          <Activity className="text-cyan-400" size={20} />
-          <h1 className="text-xl font-bold text-white tracking-widest">
-            ROCCO<span className="text-cyan-500">.AI</span> <span className="text-slate-500 font-light">// PANOPTICON</span>
+          <Activity className="text-amber-500" size={18} />
+          <h1 className="text-lg font-bold text-white tracking-widest">
+            ROCCO<span className="text-amber-500">.AI</span> <span className="text-gray-500 font-light">// PANOPTICON</span>
           </h1>
         </div>
         
@@ -181,8 +192,8 @@ function App() {
       <div className="flex-1 flex overflow-hidden">
         
         {/* LEFT PANEL */}
-        <div className="w-80 border-r border-slate-800 bg-[#0d1424]/90 p-4 flex flex-col gap-4 z-10 backdrop-blur-md shadow-xl">
-          
+        <div className="w-80 border-r border-[#333333] bg-[#000000] p-4 flex flex-col gap-4 z-10 shadow-xl">   
+
           <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-sm">
             <div className="text-xs font-bold text-white mb-1 uppercase tracking-wider flex items-center gap-2">
               <ShieldAlert size={14} className="text-cyan-400"/> Global Op Health
@@ -199,12 +210,14 @@ function App() {
             <div className="text-xs text-red-400 mt-1">Active Chokepoints / Outages</div>
           </div>
 
-          <div className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-4 flex flex-col shadow-sm">
-            <h2 className="text-xs font-bold text-white mb-3 uppercase tracking-wider">Live Signal Feed</h2>
-            <div className="flex-1 bg-[#05080f] rounded p-3 font-mono text-[10px] overflow-y-auto border border-slate-800 shadow-inner">
-              {liveFeed.length === 0 && <div className="text-white italic">Awaiting signals from Thalamus...</div>}
+          <div className="flex-1 bg-[#0a0a0a] border border-[#333333] rounded-none p-4 flex flex-col">
+            <h2 className="text-xs font-bold text-gray-400 mb-3 uppercase tracking-widest border-b border-[#333] pb-1">Live Signal Feed</h2>
+            
+            {/* INCREASED TEXT SIZE: text-[10px] -> text-xs */}
+            <div className="flex-1 bg-[#000000] p-3 font-mono text-xs overflow-y-auto scrollbar-thin scrollbar-thumb-[#333]">
+              {liveFeed.length === 0 && <div className="text-gray-600 italic">AWAITING_SIGNALS...</div>}
               {liveFeed.map((msg, i) => (
-                <div key={i} className="mb-2 text-green-400 border-b border-slate-800/50 pb-1 break-words">
+                <div key={i} className="mb-2 text-amber-400 border-b border-[#222] pb-1 break-words leading-tight">
                   {msg}
                 </div>
               ))}
@@ -250,9 +263,13 @@ function App() {
                   </div>
                 </div>
                 
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded shadow-sm flex-1">
+                <div className="bg-slate-900 border border-slate-800 p-4 rounded shadow-sm">
                   <div className="text-xs text-white mb-3 font-bold tracking-wider">PORTFOLIO METRICS</div>
                   <div className="space-y-3 font-mono text-sm">
+                    <div className="flex justify-between border-b border-slate-800 pb-1">
+                      <span className="text-white">Net Liquidation</span>
+                      <span className="text-parchment font-bold">${(pulse?.balance || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                    </div>
                     <div className="flex justify-between border-b border-slate-800 pb-1">
                       <span className="text-white">Global Health Factor</span>
                       <span className="text-cyan-400">{Number(pulse?.avg_health ?? 1.0).toFixed(2)}</span>
@@ -265,6 +282,27 @@ function App() {
                       <span className="text-white">Risk Utilization</span>
                       <span className="text-green-400">NOMINAL</span>
                     </div>
+                  </div>
+                </div>
+
+                {/* NEW: Active Positions Ledger */}
+                <div className="bg-slate-900 border border-slate-800 p-4 rounded shadow-sm flex-1 flex flex-col min-h-0">
+                  <div className="text-xs text-white mb-3 font-bold tracking-wider">ACTIVE POSITIONS</div>
+                  <div className="flex-1 overflow-y-auto space-y-2 font-mono text-xs scrollbar-thin scrollbar-thumb-slate-700 pr-2">
+                    {Object.values(activePositions).length === 0 && (
+                      <div className="text-gray-500 italic text-center mt-2">No active holdings.</div>
+                    )}
+                    {Object.values(activePositions).map((pos, idx) => (
+                      <div key={idx} className="flex justify-between border-b border-slate-800/50 pb-1">
+                        <span className="text-white font-bold">{pos.symbol}</span>
+                        <div className="text-right">
+                          <span className={pos.position > 0 ? "text-green-400" : "text-red-400"}>
+                            {pos.position > 0 ? "+" : ""}{pos.position}
+                          </span>
+                          <span className="text-gray-500 ml-2">@ ${pos.average_cost?.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -346,21 +384,20 @@ function App() {
             </div>
             
             {/* 3x2 GRID LAYOUT - FIXED OVERFLOW AND STYLING */}
-            <div className="flex-1 grid grid-cols-3 grid-rows-2 gap-2 p-2 bg-black min-h-0">
+            <div className="flex-1 grid grid-cols-3 grid-rows-2 gap-[1px] bg-[#333333] min-h-0">
               {diagnosticPanes.map((pane) => (
-                <div key={pane.id} className="bg-[#05080f] border border-slate-800 p-3 font-mono text-[10px] overflow-hidden flex flex-col min-h-0 min-w-0 rounded">
-                  <div className={`${pane.color} font-bold mb-2 border-b border-slate-800 pb-1 flex justify-between shrink-0`}>
+                <div key={pane.id} className="bg-[#000000] p-3 font-mono text-xs overflow-hidden flex flex-col min-h-0 min-w-0">
+                  <div className={`${pane.color} font-bold mb-2 border-b border-[#333] pb-1 flex justify-between shrink-0`}>
                     <span>{pane.title}</span>
                     <span className="text-green-500 animate-pulse">●</span>
                   </div>
                   
-                  {/* flex-col-reverse pushes items to the bottom. Reversed array anchors newest logs to the bottom perfectly. */}
-                  <div className="flex-1 overflow-y-auto flex flex-col-reverse scrollbar-thin scrollbar-thumb-slate-700 pr-2">
+                  <div className="flex-1 overflow-y-auto flex flex-col-reverse scrollbar-thin scrollbar-thumb-[#333] pr-2">
                     {(systemLogs[pane.id] || []).length === 0 && (
-                      <div className="text-slate-600 italic mt-auto">Waiting for log stream...</div>
+                      <div className="text-gray-600 italic mt-auto">STREAM_PENDING...</div>
                     )}
                     {(systemLogs[pane.id] || []).slice().reverse().map((logLine, idx) => (
-                      <div key={idx} className="!text-white break-all mb-1 border-b border-slate-800/50 pb-1 shrink-0 leading-tight">
+                      <div key={idx} className="!text-gray-300 break-all mb-1 pb-1 shrink-0 leading-tight">
                         {logLine}
                       </div>
                     ))}

@@ -145,6 +145,20 @@ async def get_portfolio_pulse():
     if not hasattr(app.state, 'db') or not app.state.db:
         return {"pnl": 0, "tickers": []}
 
+    # 1. Fetch live account state from Redis (populated by the C++ Brainstem)
+    account_pnl = 0.0
+    account_balance = 0.0
+    try:
+        if hasattr(app.state, 'redis'):
+            raw_state = await app.state.redis.get("account_state")
+            if raw_state:
+                state_data = json.loads(raw_state)
+                account_pnl = state_data.get("pnl", 0.0)
+                account_balance = state_data.get("balance", 0.0)
+    except Exception as e:
+        print(f"[API ERROR] Redis Account State Fetch Failed: {e}")
+
+    # 2. Fetch the physical infrastructure & market data from Postgres
     async with app.state.db.acquire() as conn:
         try:
             tickers = await conn.fetch("""
@@ -165,19 +179,22 @@ async def get_portfolio_pulse():
                        COUNT(*) FILTER (WHERE op_health < 0.5) as critical_count
                 FROM asset_states
             """)
+            
             health_val = asset_health['avg_health'] if asset_health else None
             safe_avg_health = float(health_val) if health_val is not None else 1.0
-    
             safe_critical = asset_health['critical_count'] if asset_health and asset_health['critical_count'] else 0
+            
             return {
-                "pnl": 0.0, 
-                "avg_health": asset_health['avg_health'] if asset_health else 1.0,
-                "critical_threats": asset_health['critical_count'] if asset_health else 0,
+                "pnl": account_pnl,                 
+                "balance": account_balance,         # <--- NEW: Passing balance down
+                "avg_health": safe_avg_health,
+                "critical_threats": safe_critical,
                 "tickers": [dict(t) for t in tickers]
             }
+
         except Exception as e:
             print(f"[API ERROR] Portfolio Pulse Failed: {e}")
-            return {"pnl": 0, "tickers": [], "error": str(e)}
+            return {"pnl": account_pnl, "balance": account_balance, "tickers": [], "error": str(e)}
 
 @app.websocket("/ws/stream")
 async def websocket_endpoint(websocket: WebSocket):

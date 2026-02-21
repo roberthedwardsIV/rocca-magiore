@@ -70,6 +70,8 @@ static int callback_ais(struct lws* wsi, enum lws_callback_reasons reason, void*
             if (ctx->redis) {
                 redisReply* reply = (redisReply*)redisCommand(ctx->redis, "LPUSH maritime_ais %s", raw_msg.c_str());
                 if (reply) freeReplyObject(reply);
+                redisReply* pub_reply = (redisReply*)redisCommand(ctx->redis, "PUBLISH maritime_ais %s", raw_msg.c_str());
+                if (pub_reply) freeReplyObject(pub_reply);
             }
             break;
         }

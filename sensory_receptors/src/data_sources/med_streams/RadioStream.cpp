@@ -187,7 +187,7 @@ void RadioStream::transcribe_segment(const std::vector<float>& pcm_data) {
     }
 
     if (!full_text.empty() && redis_ctx) {
-        std::cout << "[RADIOSTREAM] " << station_name << ": " << full_text << std::endl;
+        //std::cout << "[RADIOSTREAM] " << station_name << ": " << full_text << std::endl;
         json j;
         j["source"] = "radio";
         j["station"] = station_name;

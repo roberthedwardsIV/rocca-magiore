@@ -48,7 +48,7 @@ class RadioNewsSignalProcessor:
         
         async with self.db_pool.acquire() as conn:
             try:
-                rows = await conn.fetch("SELECT id, name, commodity_types[1], latitude, longitude FROM assets")
+                rows = await conn.fetch("SELECT id, name, type, latitude, longitude FROM assets")
                 for r in rows:
                     if r['name']:
                         self.context_cache[r['name'].lower()] = {
@@ -204,7 +204,7 @@ class RadioNewsSignalProcessor:
                 context = self.buffers[ch_name].strip()
                 self.buffers[ch_name] = "" 
                 
-                print(f"[DEBUG] Analyzing: {context[:40]}...")
+                #print(f"[DEBUG] Analyzing: {context[:40]}...")
                 entities = self.process_text_deterministic(context)
                 
                 signals = await self.construct_thalamus_signal(entities, context)

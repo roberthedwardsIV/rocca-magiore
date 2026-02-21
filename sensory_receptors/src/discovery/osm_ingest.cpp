@@ -150,10 +150,11 @@ public:
 
         reset_transaction();
         
+        // 1. Restore the $2 placeholder for 'type'
         m_db.prepare("insert_asset", 
             "INSERT INTO assets (name, type, commodity_types, geom, source, last_update, op_health, metadata) "
             "VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326), 'OSM_INGEST', 1, 1.0, $6) "
-            "ON CONFLICT (name) DO UPDATE SET metadata = EXCLUDED.metadata");
+            "ON CONFLICT (name) DO UPDATE SET metadata = EXCLUDED.metadata, type = EXCLUDED.type");
         
         m_db.prepare("insert_hub",   
             "INSERT INTO supply_hubs (osm_id, name, type, geom, capacity_rating, last_updated) "
@@ -246,7 +247,10 @@ void process_element_assets_hubs(const json& elem, DatabaseHandler& db) {
         lat = elem["lat"]; lon = elem["lon"];
     } else return;
 
-    std::string name = get_tag(tags, "name", "Unknown");
+    std::string name = get_tag(tags, "name:en");
+    if (name.empty()) {
+        name = get_tag(tags, "name", "Unknown");
+    }
     std::string landuse = get_tag(tags, "landuse");
     std::string industrial = get_tag(tags, "industrial");
     std::string resource = get_tag(tags, "resource");
@@ -263,15 +267,17 @@ void process_element_assets_hubs(const json& elem, DatabaseHandler& db) {
     std::string metadata_str = metadata.dump();
 
     // 1. Assets
-    if (landuse == "quarry" || industrial == "mine" || industrial == "mining" || man_made == "offshore_platform") {
+    if (landuse == "quarry" || industrial == "mine" || industrial == "mining") {
         std::string comms = resource.empty() ? "{Unknown}" : "{" + resource + "}";
+        db.execute_asset(name, "mine", comms, lon, lat, metadata_str);
+    }
+    else if (man_made == "offshore_platform") {
+        // Force the commodity to 'oil' so synapse_builder maps it to Energy Futures
+        std::string comms = resource.empty() ? "{oil}" : "{" + resource + "}";
         db.execute_asset(name, "mine", comms, lon, lat, metadata_str);
     }
     else if (industrial == "refinery" || industrial == "oil" || industrial == "chemical") {
         db.execute_asset(name, "refinery", "{}", lon, lat, metadata_str);
-    }
-    else if (industrial == "smelter" || industrial == "aluminium_smelting" || has_tag_value(tags, "product", "metal")) {
-        db.execute_asset(name, "smelter", "{}", lon, lat, metadata_str);
     }
     
     // 2. Hubs

@@ -233,6 +233,10 @@ public:
     void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override {
         // Ignore expected/benign API connection messages
         if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158) return;
+        
+        // MUTE LOG: Silence the massive 502 block while Gateway boots
+        if (errorCode == 502) return; 
+        
         std::cerr << "[IBKR ERROR] Id: " << id << " Code: " << errorCode << " Msg: " << errorMsg << std::endl;
     }
     

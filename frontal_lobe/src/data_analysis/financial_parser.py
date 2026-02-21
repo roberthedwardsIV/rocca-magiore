@@ -144,26 +144,35 @@ class OwnershipResolver:
                 cur.execute("""
                     SELECT id, name, metadata 
                     FROM assets 
-                    WHERE metadata != '{}'::jsonb 
-                      AND NOT (metadata ? 'mapped')
-                    LIMIT 50
+                    WHERE NOT (metadata ? 'mapped')
+                    LIMIT 500
                 """)
                 orphans = cur.fetchall()
                 
                 for aid, name, meta in orphans:
+                    # Skip alphanumeric engineering codes (e.g., TA.CMA-9.HNI-4)
+                    name_str = str(name).strip()
+                    if name_str.count('.') >= 2 or name_str.count('-') >= 2:
+                        cur.execute("UPDATE assets SET metadata = jsonb_set(metadata, '{mapped}', 'true') WHERE id = %s", (aid,))
+                        conn.commit()
+                        continue
+
                     raw_ticker = None
                     if 'wikidata' in meta:
                         raw_ticker = self.resolve_via_wikidata(meta['wikidata'])
                     if not raw_ticker:
-                        search_term = meta.get('operator') or meta.get('company') or name
+                        search_term = meta.get('operator') or meta.get('company') or name_str
                         if search_term:
-                            raw_ticker = self.resolve_via_sec_api(search_term)
+                            # Clean generic terms to improve SEC API hit rate
+                            clean_term = re.sub(r'(?i)\b(colliery|quarry|mine|project|operations)\b', '', search_term).strip()
+                            raw_ticker = self.resolve_via_sec_api(clean_term)
+                            time.sleep(0.15)
 
                     # --- PUBLIC MARKET GATE ---
                     valid_ticker = self.validate_ticker(raw_ticker)
 
                     if valid_ticker:
-                        print(f"   [PIVOT SUCCESS] Mapped '{name}' to Public Ticker: {valid_ticker}")
+                        print(f"   [PIVOT SUCCESS] Mapped '{name_str}' to Public Ticker: {valid_ticker}")
                         
                         # 1. Register Ticker
                         cur.execute("INSERT INTO ticker_registry (symbol, instrument_type, exchange, active, last_updated) VALUES (%s, 'stock', 'SMART', TRUE, NOW()) ON CONFLICT DO NOTHING", (valid_ticker,))
@@ -181,18 +190,20 @@ class OwnershipResolver:
                             "timestamp": int(time.time()*1000)
                         }
                         self.r.lpush("filing_processing_queue", json.dumps(task))
-                    else:
-                        if raw_ticker:
-                            print(f"   [PIVOT IGNORED] '{name}' mapped to '{raw_ticker}', but it is private/invalid.")
-                        else:
-                            print(f"   [PIVOT FAILED] No corporate owner found for '{name}'.")
-
-                    # Mark as processed in DB so we don't query it again
+                    
+                    # NOTE: We silently ignore failures here. State-owned and private assets are expected.
+                    
+                    # Mark as processed in DB
                     cur.execute("UPDATE assets SET metadata = jsonb_set(metadata, '{mapped}', 'true') WHERE id = %s", (aid,))
                     conn.commit()
 
                 conn.close()
-                time.sleep(3600) 
+                
+                if orphans:
+                    time.sleep(5) 
+                else:
+                    print("[OSINT] Backlog cleared. Sleeping for 1 hour.")
+                    time.sleep(3600) 
             except Exception as e:
                 print(f"[OSINT ERR] {e}")
                 time.sleep(60)

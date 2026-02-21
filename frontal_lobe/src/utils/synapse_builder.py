@@ -33,7 +33,19 @@ def ensure_schema_compatibility(cur):
         cur.execute("ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_update BIGINT DEFAULT 0;")
         cur.execute("ALTER TABLE assets ADD COLUMN IF NOT EXISTS op_health FLOAT DEFAULT 1.0;")
         cur.execute("ALTER TABLE assets ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;")
-        
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'assets' AND column_name = 'type' AND is_generated = 'ALWAYS'
+                ) THEN
+                    ALTER TABLE assets DROP COLUMN type;
+                    ALTER TABLE assets ADD COLUMN type VARCHAR(50);
+                END IF;
+            END
+            $$;
+        """)
         # 2. Scrub Garbage Data
         cur.execute("""
             DELETE FROM assets 
