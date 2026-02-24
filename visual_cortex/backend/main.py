@@ -161,16 +161,27 @@ async def get_portfolio_pulse():
     # 2. Fetch the physical infrastructure & market data from Postgres
     async with app.state.db.acquire() as conn:
         try:
+            # THE FIX: Added a lateral subquery (ts_hist) to aggregate the last 20 price points into an array
             tickers = await conn.fetch("""
                 SELECT t.symbol, t.instrument_type, 
-                       COALESCE(ts.price, 0.0) as price, 
-                       COALESCE(ts.volatility, 0.0) as vol,
-                       COALESCE(ts.trend_score, 0.0) as trend
+                       COALESCE(ts_latest.price, 0.0) as price, 
+                       COALESCE(ts_latest.volatility, 0.0) as vol,
+                       ts_hist.history
                 FROM ticker_registry t
                 LEFT JOIN (
-                    SELECT DISTINCT ON (symbol) symbol, price, volatility, trend_score 
+                    SELECT DISTINCT ON (symbol) symbol, price, volatility 
                     FROM ticker_states ORDER BY symbol, time_bucket DESC
-                ) ts ON t.symbol = ts.symbol
+                ) ts_latest ON t.symbol = ts_latest.symbol
+                LEFT JOIN (
+                    SELECT symbol, array_agg(price ORDER BY time_bucket ASC) as history
+                    FROM (
+                        SELECT symbol, price, time_bucket,
+                               ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY time_bucket DESC) as rn
+                        FROM ticker_states
+                    ) sub
+                    WHERE rn <= 20
+                    GROUP BY symbol
+                ) ts_hist ON t.symbol = ts_hist.symbol
                 WHERE t.active = TRUE
             """)
 
@@ -184,12 +195,23 @@ async def get_portfolio_pulse():
             safe_avg_health = float(health_val) if health_val is not None else 1.0
             safe_critical = asset_health['critical_count'] if asset_health and asset_health['critical_count'] else 0
             
+            # Format the output to safely handle the PostgreSQL array
+            formatted_tickers = []
+            for t in tickers:
+                formatted_tickers.append({
+                    "symbol": t["symbol"],
+                    "instrument_type": t["instrument_type"],
+                    "price": t["price"],
+                    "vol": t["vol"],
+                    "history": t["history"] if t["history"] else []
+                })
+
             return {
                 "pnl": account_pnl,                 
-                "balance": account_balance,         # <--- NEW: Passing balance down
+                "balance": account_balance,      
                 "avg_health": safe_avg_health,
                 "critical_threats": safe_critical,
-                "tickers": [dict(t) for t in tickers]
+                "tickers": formatted_tickers
             }
 
         except Exception as e:

@@ -19,6 +19,9 @@
 #include <chrono>
 #include <set>
 #include <atomic>
+#include <unordered_set>
+#include <ctime>
+#include <cstdlib>
 
 using json = nlohmann::json;
 
@@ -120,11 +123,19 @@ class MarketDataFeed : public EWrapperStub {
 public:
     std::atomic<bool> is_ready{false}; // Handshake flag
 
-    MarketDataFeed() : client(new EClientSocket(this, &OSSignal)), reader(client.get(), &OSSignal) {
+    void refresh_subscriptions() {
+        if (client->isConnected() && is_ready) {
+            load_targets_and_subscribe();
+        }
+    }
+
+    MarketDataFeed() : OSSignal(2000) {
         redis_ctx = redisConnect("corpus_callosum", 6379);
         if (!redis_ctx || redis_ctx->err) {
             std::cerr << "[IKBR MARKET FEED] Redis Connection Error: " << (redis_ctx ? redis_ctx->errstr : "Alloc failure") << std::endl;
         }
+        // Seed the random number generator
+        std::srand(std::time(nullptr));
     }
 
     ~MarketDataFeed() {
@@ -132,46 +143,29 @@ public:
     }
 
     bool connect() {
-        // Port 4001 is standard for Gateway; use 7496 if using TWS Live, 7497 for TWS Paper
-        if (client->eConnect("127.0.0.1", 4002, 100)) {
-            std::cout << "[MARKET FEED] Connected to IBKR Gateway. Awaiting Handshake..." << std::endl;
+        client = std::make_unique<EClientSocket>(this, &OSSignal);
+        int dynamic_client_id = 100 + (std::rand() % 9899);
 
-            // --- CONFIGURATION FOR MIXED DATA PERMISSIONS ---
-            // Type 1 = Live Streaming (Requires full subscriptions)
-            // Type 3 = Delayed (15-20 min lag, usually free)
+        // Explicitly use 127.0.0.1 to force IPv4 routing within the shared network namespace
+        if (client->eConnect("127.0.0.1", 4002, dynamic_client_id)) {
+            std::cout << "[MARKET FEED] TCP Connected to IBKR Gateway on port 4002 with Client ID: " << dynamic_client_id << std::endl;
+
             client->reqMarketDataType(3); 
-            std::cout << "[MARKET FEED] Data Mode: DELAYED (Type 3) - Ensuring Futures Data Flow." << std::endl;
-
-            // THE FIX: Start the EReader thread to actually pull data from the TCP socket!
-            reader.start();
+            
+            reader = std::make_unique<EReader>(client.get(), &OSSignal);
+            reader->start();
 
             std::thread([this]() {
                 while (client->isConnected()) {
                     OSSignal.waitForSignal();
-                    reader.processMsgs();
+                    reader->processMsgs();
                 }
             }).detach();
             
-            // Block until IBKR confirms readiness via nextValidId
-            int wait_loops = 0;
-            while (!is_ready && wait_loops < 50) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                wait_loops++;
-            }
-
-            if (!is_ready) {
-                std::cerr << "[MARKET FEED] Handshake timeout. Gateway might still be booting." << std::endl;
-                client->eDisconnect();
-                return false;
-            }
-            
-            load_targets_and_subscribe();
             return true;
-
-        } else {
-            std::cerr << "[MARKET FEED] IBKR Connection Failed. Is the Gateway running?" << std::endl;
-            return false;
-        }
+        } 
+        
+        return false;
     }
 
     // Capture the handshake from the API
@@ -181,18 +175,45 @@ public:
     }
 
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override {
-        if (field == 4 || field == 1 || field == 2) { 
-            std::string symbol = id_map[tickerId];
+        std::string symbol = id_map[tickerId];
+        
+        // --- TEMPORARY CATCH-ALL LOG ---
+        // Print every single price tick received to see exactly what IBKR is broadcasting out-of-hours
+        std::cout << "[MARKET FEED DEBUG] " << symbol << " received TickType: " << field << " | Price: $" << price << std::endl;
+
+        // Handle Live (1=Bid, 2=Ask, 4=Last, 9=Close) and Delayed (66=Bid, 67=Ask, 68=Last, 75=Delayed Close)
+        if (field == 1 || field == 2 || field == 4 || field == 9 || field == 66 || field == 67 || field == 68 || field == 75) { 
+            long long ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
             json j;
             j["entity_type"] = "ticker_update";
             j["symbol"] = symbol;
-            if (field == 4) j["price"] = price;
-            if (field == 1) j["bid"] = price;
-            if (field == 2) j["ask"] = price;
-            j["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            
+            // Treat Close/Delayed Close the same as Last price for internal logic
+            if (field == 4 || field == 68 || field == 9 || field == 75) j["price"] = price;
+            if (field == 1 || field == 66) j["bid"] = price;
+            if (field == 2 || field == 67) j["ask"] = price;
+            
+            j["timestamp"] = ts;
+            
             if (redis_ctx) {
                 std::string payload = j.dump();
                 redisCommand(redis_ctx, "LPUSH raw_signals %s", payload.c_str());
+            }
+
+            // --- WAKE UP & VALUATE ASSETS ---
+            if (ticker_to_assets.find(symbol) != ticker_to_assets.end()) {
+                for (int aid : ticker_to_assets[symbol]) {
+                    json a_sig;
+                    a_sig["asset_id"] = aid;
+                    a_sig["category"] = "market";
+                    a_sig["price"] = price;
+                    a_sig["timestamp"] = ts;
+                    if (redis_ctx) {
+                        std::string a_payload = a_sig.dump();
+                        redisCommand(redis_ctx, "LPUSH raw_signals %s", a_payload.c_str());
+                    }
+                }
             }
         }
     }
@@ -231,33 +252,71 @@ public:
     }
 
     void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override {
-        // Ignore expected/benign API connection messages
-        if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158) return;
-        
-        // MUTE LOG: Silence the massive 502 block while Gateway boots
-        if (errorCode == 502) return; 
+        // MUTE LOGS: Silence expected/benign API connection messages and known data limitations
+        if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158) return; // OK connections
+        if (errorCode == 502) return; // Booting lag
+        if (errorCode == 2119 || errorCode == 2103) return; // Data farm connection drops (normal on paper)
+        if (errorCode == 10197) return; // Competing session (Muted to stop terminal spam)
+        if (errorCode == 200) return; // No security def (Usually Pink Sheets/OTC, ignore and move on)
+        if (errorCode == 10167) return; // <--- NEW: Mute "Displaying delayed market data" warning
         
         std::cerr << "[IBKR ERROR] Id: " << id << " Code: " << errorCode << " Msg: " << errorMsg << std::endl;
     }
+
+    void wake_up_infrastructure() {
+        try {
+            pqxx::connection C("dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432");
+            pqxx::work W(C);
+            long long ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+            auto dispatch_pulse = [&](pqxx::result& R, const std::string& id_key, const std::string& category) {
+                for (auto row : R) {
+                    json j; 
+                    if (id_key == "line_id" || id_key == "hub_id") j[id_key] = row[0].as<long long>();
+                    else j[id_key] = row[0].as<int>();
+                    j["category"] = category; 
+                    j["timestamp"] = ts;
+                    std::string p = j.dump(); 
+                    if (redis_ctx) redisCommand(redis_ctx, "LPUSH raw_signals %s", p.c_str());
+                }
+            };
+
+            pqxx::result R_routes = W.exec("SELECT line_id FROM supply_lines");
+            dispatch_pulse(R_routes, "line_id", "flow");
+
+            pqxx::result R_hubs = W.exec("SELECT id FROM supply_hubs");
+            dispatch_pulse(R_hubs, "hub_id", "inventory");
+
+            pqxx::result R_chokes = W.exec("SELECT id FROM supply_chokepoints");
+            dispatch_pulse(R_chokes, "cp_id", "maintenance");
+
+            std::cout << "[IKBR MARKET FEED] Emitted Global Infrastructure Wake-up Pulse." << std::endl;
+        } catch (...) {}
+    }
     
 private:
-    std::unique_ptr<EClientSocket> client;
     EReaderOSSignal OSSignal;
-    EReader reader; 
+    std::unique_ptr<EClientSocket> client;
+    std::unique_ptr<EReader> reader;
     redisContext* redis_ctx;
     std::unordered_map<int, std::string> id_map;
+    std::unordered_set<std::string> subscribed_symbols;
+    std::unordered_map<std::string, std::vector<int>> ticker_to_assets;
+    int current_req_id = 1000;
 
     void load_targets_and_subscribe() {
         try {
             pqxx::connection C("dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432");
             pqxx::work W(C);
             pqxx::result R = W.exec("SELECT symbol, instrument_type, exchange, metadata FROM ticker_registry WHERE active = TRUE");
-            int reqId = 1000;
             std::cout << "[IKBR MARKET FEED] Loading " << R.size() << " targets from DB..." << std::endl;
             
             for (auto row : R) {
                 Contract c;
                 c.symbol = row["symbol"].as<std::string>();
+                if (subscribed_symbols.find(c.symbol) != subscribed_symbols.end()) {
+                    continue;
+                }
                 c.exchange = row["exchange"].as<std::string>();
                 c.currency = "USD";
                 std::string type = row["instrument_type"].as<std::string>();
@@ -267,29 +326,57 @@ private:
                     c.lastTradeDateOrContractMonth = "202612";
                 } else if (type == "commodity_spot") {
                     // TRANSLATE PSEUDO-SPOTS TO VALID IBKR DATA FEEDS
-                    if (c.symbol == "XAU_USD") { c.symbol = "XAUUSD"; c.secType = "CMDTY"; c.exchange = "SMART"; }
-                    else if (c.symbol == "LME_CU") { c.symbol = "HG"; c.secType = "CONTFUT"; c.exchange = "COMEX"; }
-                    else if (c.symbol == "WTI_SPOT") { c.symbol = "CL"; c.secType = "CONTFUT"; c.exchange = "NYMEX"; }
-                    else if (c.symbol == "LITH_CARB") { c.symbol = "LIT"; c.secType = "STK"; c.exchange = "SMART"; }
+                    if (c.symbol == "XAU_USD") { 
+                        c.symbol = "XAUUSD"; c.secType = "CMDTY"; c.exchange = "SMART"; 
+                    }
+                    else if (c.symbol == "LME_CU") { 
+                        c.symbol = "HG"; c.secType = "FUT"; c.exchange = "COMEX"; c.lastTradeDateOrContractMonth = "202612"; 
+                    }
+                    else if (c.symbol == "WTI_SPOT") { 
+                        c.symbol = "CL"; c.secType = "FUT"; c.exchange = "NYMEX"; c.lastTradeDateOrContractMonth = "202612"; 
+                    }
+                    else if (c.symbol == "LITH_CARB") { 
+                        c.symbol = "LIT"; c.secType = "STK"; c.exchange = "SMART"; 
+                    }
                 } else if (type == "option") {
                     c.secType = "OPT";
                 } else {
                     c.secType = "STK";
                     c.exchange = "SMART"; 
-                    c.primaryExchange = row["exchange"].as<std::string>();
+                    std::string db_exch = row["exchange"].as<std::string>();
+                    // Only set primaryExchange if it's a specific physical exchange (e.g. NYSE)
+                    // Otherwise, leave it empty so IBKR's SmartRouter handles it automatically.
+                    if (db_exch != "SMART" && db_exch != "Unknown") {
+                        c.primaryExchange = db_exch;
+                    }
                 }
                 
-                client->reqMktData(reqId, c, "100,101,106", false, false, TagValueListSPtr());
+                client->reqMktData(current_req_id, c, "100,101,106", false, false, TagValueListSPtr());
                 
-                // Map the original ID back for our signals
-                id_map[reqId] = row["symbol"].as<std::string>(); 
-                std::cout << "   -> Subscribed: " << c.symbol << " (" << c.secType << ")" << std::endl;
-                reqId++;
+                // Track it so we don't request it again next cycle
+                id_map[current_req_id] = c.symbol; 
+                subscribed_symbols.insert(c.symbol);
+                
+                std::cout << "[IKBR MARKET FEED] -> Subscribed: " << c.symbol << " (" << c.secType << ")" << std::endl;
+                
+                current_req_id++;
             }
+            pqxx::result R_sens = W.exec("SELECT ticker_symbol, entity_id FROM ticker_sensitivity WHERE entity_id LIKE 'ASSET_%'");
+            for (auto row : R_sens) {
+                std::string sym = row["ticker_symbol"].as<std::string>();
+                std::string ent = row["entity_id"].as<std::string>();
+                try {
+                    int asset_id = std::stoi(ent.substr(6)); // Strip "ASSET_"
+                    ticker_to_assets[sym].push_back(asset_id);
+                } catch (...) {}
+            }
+            std::cout << "[IKBR MARKET FEED] Loaded " << ticker_to_assets.size() << " asset-to-ticker sensitivity mappings." << std::endl;
         } catch (const std::exception &e) {
             std::cerr << "[DB ERROR] Failed to load targets: " << e.what() << std::endl;
         }
     }
+
+    
 };
 
 int main() {
@@ -304,8 +391,19 @@ int main() {
         std::this_thread::sleep_for(std::chrono::seconds(10));
     }
     
+    std::cout << "[MARKET FEED] Waiting for IBKR API Handshake..." << std::endl;
+    while (!feed.is_ready) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    
+    // 3. Handshake received! Load the first batch of targets
+    feed.refresh_subscriptions();
+    feed.wake_up_infrastructure();
+    // 4. Main polling loop (check DB for new tickers every 60s)
     while(true) {
         std::this_thread::sleep_for(std::chrono::seconds(60));
+        feed.refresh_subscriptions();
     }
+    
     return 0;
 }

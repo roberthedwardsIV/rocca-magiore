@@ -51,7 +51,24 @@ def ensure_schema_compatibility(cur):
             DELETE FROM assets 
             WHERE name IN ('Unknown', 'H', 'UNKN', '') 
                OR name IS NULL 
-               OR length(name) < 3;
+               OR length(name) <= 3
+               -- Regex: If it contains 3 or more numbers in a row, or too many dashes/dots, it's a code
+               OR name ~ '[0-9]{3,}' 
+               OR name ~ '([\.\-].*){3,}'
+               -- Filter out Energy/Chemicals to focus purely on Metals
+               OR name ILIKE '%oil%'
+               OR name ILIKE '%petrol%'
+               OR name ILIKE '%gas %'
+               OR name ILIKE '%chemical%'
+               OR name ILIKE '% LNG%'
+               OR type = 'chemical';
+        """)
+
+        # NEW: Reset the 'mapped' flag so the financial_parser tries again on the clean data
+        cur.execute("""
+            UPDATE assets 
+            SET metadata = metadata - 'mapped' 
+            WHERE metadata ? 'mapped' AND NOT metadata ? 'owner_ticker';
         """)
 
         # 3. Deduplicate Assets (Keep the most recent)

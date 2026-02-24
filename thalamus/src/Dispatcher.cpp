@@ -43,6 +43,19 @@ void Dispatcher::route_signal(const json& sig) {
     if (std::find(PERSISTENT_TYPES.begin(), PERSISTENT_TYPES.end(), type) != PERSISTENT_TYPES.end()) {
         save_to_database(sig);
     }
+    if (sig.contains("asset_id")) {
+        handle_asset_signal(sig);
+        return;
+    } else if (sig.contains("line_id")) {
+        handle_route_signal(sig);
+        return;
+    } else if (sig.contains("hub_id")) {
+        handle_hub_signal(sig);
+        return;
+    } else if (sig.contains("cp_id")) {
+        handle_chokepoint_signal(sig);
+        return;
+    }
 
     // 1. MACRO ECONOMIC DATA
     if (type == "macro_economic") {
@@ -62,39 +75,6 @@ void Dispatcher::route_signal(const json& sig) {
     else if (type == "earthquake" || type == "wildfire" || type == "environment") {
         handle_event_signal(sig);
     }
-    // 3. PHYSICAL ASSETS
-    else if (type == "mine" || type == "refinery" || type == "smelter" || 
-             type == "sand" || type == "aggregate" || type == "clay" || 
-             type == "kaolin" || type == "phosphate") {
-        handle_asset_signal(sig);
-    }
-    // 4. INFRASTRUCTURE: ROUTES
-    else if (type == "supply_line" || 
-             type == "rail_line" || type == "rail_mainline" || type == "rail_spur" ||
-             type == "highway" || type == "highway_trunk" || type == "road" ||
-             type == "pipeline" || type == "pipeline_line" ||
-             type == "maritime_route" || type == "shipping_lane" ||
-             type == "air_route" || type == "air" ||
-             type == "waterway" || type == "inland_waterway" ||
-             type == "power_line" || type == "power_grid" || type == "conveyor") {
-        handle_route_signal(sig);
-    }
-    // 5. INFRASTRUCTURE: HUBS
-    else if (type == "port" || type == "maritime_port" || type == "maritime_dock" ||
-             type == "airport" || type == "aerodrome" || type == "heliport" ||
-             type == "rail_node" || type == "marshalling_yard" || type == "station" ||
-             type == "warehouse" || type == "logistics_terminal" || type == "storage_tank" ||
-             type == "substation" || type == "power_plant" || type == "water_reservoir") {
-        handle_hub_signal(sig);
-    }
-    // 6. INFRASTRUCTURE: CHOKEPOINTS
-    else if (type == "bridge" || type == "tunnel" || 
-             type == "border" || type == "border_crossing" ||
-             type == "canal_lock" || type == "dam" || 
-             type == "runway" || 
-             type == "pumping_station" || type == "crane") {
-        handle_chokepoint_signal(sig);
-    }
     // 7. FINANCIAL INSTRUMENTS
     else if (type == "stock" || type == "future" || 
              type == "option" || type == "commodity_spot" || type == "ticker_update") {
@@ -103,7 +83,7 @@ void Dispatcher::route_signal(const json& sig) {
     else {
         if (type != "Unknown" && type != "unknown" && type != "signal" && type != "keepalive" &&
             type != "sand" && type != "aggregate" && type != "clay" && type != "kaolin" && type != "phosphate") {
-            std::cerr << "[DISPATCHER] Warning: Unhandled entity type: " << type << std::endl;
+            //std::cerr << "[DISPATCHER] Warning: Unhandled entity type: " << type << std::endl;
         }
     }
 }
@@ -174,7 +154,7 @@ void Dispatcher::handle_asset_signal(const json& sig) {
 
     auto asset = GlobalRegistry::get_asset(id);
     if (asset) {
-        asset->process_packet(sig["data"]);
+        asset->process_packet(sig.contains("data") ? sig["data"] : sig);        
         Propagator::propagate_asset_change(id); 
     }
 }

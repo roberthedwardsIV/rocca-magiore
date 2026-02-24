@@ -125,11 +125,19 @@ class RadioNewsSignalProcessor:
             mag = float(mag_ent['text']) if mag_ent else 5.0
 
             signal_list.append({
-                "entity_id": f"NEWS_EQ_{timestamp}",
-                "entity_type": "earthquake",
+                "entity_id": str(db_id),    # THE FIX: Must be the numeric ID as a string
+                "entity_type": e_type,
+                "asset_id": db_id,          # THE FIX: Expose asset_id at the root level
                 "timestamp": timestamp,
-                "reliability_noise": 0.8,
-                "data": {"lat": lat, "lon": lon, "mag": mag, "mmi": 1.0}
+                "reliability_noise": 1.0,
+                "data": {
+                    "asset_id": db_id,
+                    "category": cat,
+                    "severity": sev,
+                    "reliability": 0.8,
+                    "lat": asset_lat,
+                    "lon": asset_lon
+                }
             })
 
         for ent in entities:

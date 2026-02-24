@@ -7,15 +7,16 @@ export default {
   theme: {
     extend: {
       colors: {
-        void: "#0c0c0c",       // Pure Black
-        parchment: "#f5f5f5",  // Nice Tan
-        nautical: "#001f3f",   // Deep Navy Blue
-        slate: "#2d2d2d",      // Subtle Gray
-        paper: "#d4c3a3",      // Off-White
+        term_black: "#000000",
+        term_gray: "#111111",
+        term_border: "#333333",
+        term_cyan: "#00f2ea",
+        term_amber: "#ffbf00",
+        term_green: "#00ff00",
+        term_red: "#ff0000",
       },
       fontFamily: {
-        mono: ['"JetBrains Mono"', 'monospace'],
-        serif: ['"Georgia"', 'serif'], // For headers to give that "Legacy" feel
+        mono: ['"JetBrains Mono"', 'Consolas', 'monospace'],
       }
     },
   },

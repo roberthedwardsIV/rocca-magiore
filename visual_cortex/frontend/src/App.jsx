@@ -1,54 +1,76 @@
 import React, { useState, useEffect } from 'react';
 import PanopticonMap from './components/PanopticonMap';
-import { Activity, AlertTriangle, ShieldAlert, Cpu, TerminalSquare, X, LineChart, TrendingUp, TrendingDown, DollarSign } from 'lucide-react';
+import { ShieldAlert, AlertTriangle, RadioTower, Flame, Activity } from 'lucide-react';
+
+// --- NEW: RAW SVG SPARKLINE COMPONENT ---
+// Ultra-lightweight, zero-dependency chart for the terminal aesthetic
+const Sparkline = ({ data, width = 60, height = 18 }) => {
+  if (!data || data.length < 2) {
+    return <div style={{width, height}} className="flex items-center justify-end text-[8px] text-gray-700 italic">AWAITING_DATA</div>;
+  }
+  
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  
+  const points = data.map((d, i) => {
+    const x = (i / (data.length - 1)) * width;
+    const y = height - ((d - min) / range) * height;
+    return `${x},${y}`;
+  }).join(' ');
+
+  // Color logic: If the oldest point is less than the newest point, it's trending UP (Green)
+  const isUp = data[0] <= data[data.length - 1];
+  const colorClass = isUp ? 'text-term_green' : 'text-term_red';
+
+  return (
+    <svg width={width} height={height} className={`overflow-visible ${colorClass} stroke-current opacity-80`}>
+      <polyline points={points} fill="none" strokeWidth="1.5" strokeLinejoin="miter" strokeLinecap="square" />
+    </svg>
+  );
+};
+
 
 function App() {
   const [worldState, setWorldState] = useState({ assets: [], hubs: [], lines: [], chokepoints: [] });
   const [pulse, setPulse] = useState({ pnl: 0, balance: 0, avg_health: 1.0, critical_threats: 0, active_events: 0, tickers: [] });
   const [liveFeed, setLiveFeed] = useState([]);
-  
-  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
-  const [isQuantOpen, setIsQuantOpen] = useState(false);
   const [tradeSignals, setTradeSignals] = useState([]);
-  
-  // THE FIX: Added the missing state declaration here!
   const [activePositions, setActivePositions] = useState({}); 
-  
-  // State to hold our live Docker logs
   const [systemLogs, setSystemLogs] = useState({
-    frontal_lobe: [],
-    sensory_receptors: [],
-    ibkr_gateway: [],
-    thalamus: [],
-    hippocampus: [],
-    visual_cortex_backend: []
+    frontal_lobe: [], sensory_receptors: [], ibkr_gateway: [], thalamus: [], hippocampus: [], visual_cortex_backend: []
   });
+  
+  const [recentThreats, setRecentThreats] = useState([]);
+  const [selectedEntity, setSelectedEntity] = useState(null);
+
+  const handleEntitySelect = (entity) => {
+    if (!entity) {
+      setSelectedEntity(null);
+      return;
+    }
+    setSelectedEntity(entity);
+  };
+
+  const [activeTab, setActiveTab] = useState('MAP'); 
 
   const fetchWorldState = async (bounds, zoom) => {
     try {
       const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
       const res = await fetch(`http://${window.location.hostname}:8000/api/world_state?bbox=${bbox}&zoom=${Math.round(zoom)}`);
-      
       if (!res.ok) return; 
-
       const data = await res.json();
-      
-      if (data && Array.isArray(data.assets)) {
-        setWorldState(data);
-      }
+      if (data && Array.isArray(data.assets)) setWorldState(data);
     } catch (e) {
       console.error("Failed to fetch world state:", e);
     }
   };
 
-  // Periodic Pulse Fetcher
   useEffect(() => {
     const fetchPulse = async () => {
       try {
         const res = await fetch(`http://${window.location.hostname}:8000/api/portfolio_pulse`);
-        
         if (!res.ok) return; 
-
         const data = await res.json();
         if (data) {
           setPulse({
@@ -60,356 +82,498 @@ function App() {
             tickers: data.tickers || []
           });
         }
-      } catch (e) {
-        console.error("Pulse fetch error:", e);
-      }
+      } catch (e) { console.error("Pulse fetch error:", e); }
     };
     fetchPulse();
     const int = setInterval(fetchPulse, 5000);
     return () => clearInterval(int);
   }, []);
 
-  // Main Event Stream (Map & Tape)
   useEffect(() => {
     const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/stream`);
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        
         const event = new CustomEvent('stream-event', { detail: msg });
         window.dispatchEvent(event);
 
         if (['raw_signals', 'execution_signals'].includes(msg.channel)) {
-          const textStr = typeof msg.payload === 'object' ? JSON.stringify(msg.payload) : msg.payload;
-          const feedItem = `[${msg.channel.toUpperCase()}] ${textStr}`;
-          setLiveFeed(prev => [feedItem, ...prev].slice(0, 50));
+          let feedStr = "";
+          if (typeof msg.payload === 'object') {
+              if (msg.channel === 'execution_signals') {
+                  feedStr = `> [EXEC] ${msg.payload.action} ${msg.payload.sym || msg.payload.symbol} @ $${msg.payload.mkt?.toFixed(2)}`;
+              } else if (msg.channel === 'raw_signals') {
+                  const eType = msg.payload.entity_type ? msg.payload.entity_type.toUpperCase() : 'UNK';
+                  const eId = msg.payload.entity_id ? msg.payload.entity_id.toString().substring(0,15) : '';
+                  feedStr = `> [RAW] ${eType} | ID: ${eId}`;
+                  
+                  const cat = msg.payload.data?.category;
+                  if (eType === 'EARTHQUAKE' || eType === 'WILDFIRE' || cat === 'threat' || cat === 'integrity') {
+                    const newThreat = {
+                      id: msg.payload.entity_id,
+                      type: eType,
+                      ts: msg.payload.timestamp,
+                      severity: msg.payload.data?.severity || msg.payload.data?.mag || msg.payload.data?.frp || 'WARN',
+                      lat: msg.payload.data?.lat?.toFixed(4) || 'N/A',
+                      lon: msg.payload.data?.lon?.toFixed(4) || 'N/A'
+                    };
+                    setRecentThreats(prev => [newThreat, ...prev.filter(t => t.id !== newThreat.id)].slice(0, 5));
+                  }
+              } else {
+                  feedStr = `> [${msg.channel.toUpperCase()}] DATA_RX`;
+              }
+          } else {
+              feedStr = `> [${msg.channel.toUpperCase()}] ${msg.payload}`;
+          }
+          
+          const timestamp = new Date().toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit'});
+          const feedItem = { time: timestamp, text: feedStr, channel: msg.channel };
+          
+          setLiveFeed(prev => [feedItem, ...prev].slice(0, 100));
         }
 
         if (msg.channel === 'execution_signals') {
-           setTradeSignals(prev => [msg.payload, ...prev].slice(0, 20)); 
+          setTradeSignals(prev => [msg.payload, ...prev].slice(0, 20)); 
         }
 
-        // Capture portfolio updates from IBKR
         if (msg.channel === 'state_vectors' && msg.payload.type === 'portfolio_update') {
-           setActivePositions(prev => ({
-             ...prev,
-             [msg.payload.symbol]: msg.payload
-           }));
+           setActivePositions(prev => ({ ...prev, [msg.payload.symbol]: msg.payload }));
         }
       } catch (err) {
-        console.warn("Non-JSON WebSocket message received:", e.data);
+        console.warn("Non-JSON WebSocket message received");
       }
     };
     return () => ws.close();
   }, []);
 
-  // Dedicated Diagnostics Log Streamer
   useEffect(() => {
-    // Only connect and stream logs if the modal is actually open
-    if (!isDiagnosticsOpen) return;
+    if (activeTab !== 'SYS') return; 
 
     const wsLogs = new WebSocket(`ws://${window.location.hostname}:8000/ws/logs`);
-    
     wsLogs.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
         if (msg.container && msg.log) {
           setSystemLogs(prev => ({
             ...prev,
-            // Append new log and slice to keep only the last 50 lines per container
             [msg.container]: [...(prev[msg.container] || []), msg.log].slice(-50)
           }));
         }
-      } catch (err) {
-        console.warn("Log parse error", err);
-      }
+      } catch (err) { console.warn("Log parse error", err); }
     };
-
     return () => wsLogs.close();
-  }, [isDiagnosticsOpen]);
+  }, [activeTab]);
 
-  // Definitions for the 6 diagnostic panes
   const diagnosticPanes = [
-    { id: 'frontal_lobe', title: 'FRONTAL LOBE (AI & PARSING)', color: 'text-cyan-500' },
-    { id: 'sensory_receptors', title: 'SENSORY RECEPTORS (INGESTION)', color: 'text-yellow-500' },
-    { id: 'ibkr_gateway', title: 'IBKR GATEWAY (EXECUTION)', color: 'text-orange-500' },
-    { id: 'thalamus', title: 'THALAMUS (SIGNAL ROUTING)', color: 'text-green-500' },
-    { id: 'hippocampus', title: 'HIPPOCAMPUS (DATABASE)', color: 'text-purple-500' },
-    { id: 'visual_cortex_backend', title: 'VISUAL CORTEX (UI/API)', color: 'text-rose-500' },
+    { id: 'frontal_lobe', title: 'FRONTAL LOBE', color: 'text-term_cyan' },
+    { id: 'sensory_receptors', title: 'SENSORY RECEPTORS', color: 'text-term_amber' },
+    { id: 'ibkr_gateway', title: 'IBKR GATEWAY', color: 'text-term_amber' },
+    { id: 'thalamus', title: 'THALAMUS', color: 'text-term_green' },
+    { id: 'hippocampus', title: 'HIPPOCAMPUS', color: 'text-term_cyan' },
+    { id: 'visual_cortex_backend', title: 'VISUAL CORTEX', color: 'text-term_green' },
   ];
 
-  return (
-    <div className="h-screen w-screen bg-black text-gray-300 font-mono overflow-hidden flex flex-col">     
+  const marqueeString = `ROCCO MAGGIORE V1.0  |  NET LIQ: $${(pulse?.balance || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}  |  DAILY PNL: $${(pulse?.pnl || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}  |  ` + 
+    (pulse?.tickers || []).map(t => `${t.symbol}: $${t.price?.toFixed(2)} (${((t.vol || 0)*100).toFixed(1)}% IV)`).join('  |  ');
 
-      {/* GLOBAL CSS OVERRIDE */}
+  return (
+    <div className="h-screen w-screen bg-term_black text-gray-300 font-mono flex flex-col">     
+
       <style>{`
-        .maplibregl-popup-content {
-          background: rgba(15, 23, 42, 0.95) !important;
-          border: 1px solid #0891b2 !important;
-          border-radius: 0.5rem !important;
-          padding: 0.5rem !important;
-          box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.8) !important;
+        @keyframes marquee {
+          0% { transform: translateX(100vw); }
+          100% { transform: translateX(-100%); }
         }
-        .maplibregl-popup-tip {
-          border-top-color: rgba(15, 23, 42, 0.95) !important;
+        .animate-marquee {
+          display: inline-block;
+          white-space: nowrap;
+          animation: marquee 100s linear infinite;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .no-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
         }
       `}</style>
 
-      {/* HEADER */}
-      <div className="h-12 border-b border-[#333333] bg-[#050505] flex items-center justify-between px-6 z-10">
-        <div className="flex items-center gap-4">
-          <Activity className="text-amber-500" size={18} />
-          <h1 className="text-lg font-bold text-white tracking-widest">
-            ROCCO<span className="text-amber-500">.AI</span> <span className="text-gray-500 font-light">// PANOPTICON</span>
-          </h1>
-        </div>
-        
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2 text-sm text-cyan-100 bg-cyan-900/30 px-3 py-1 rounded-full border border-cyan-800/50">
-            <Cpu size={14} className="text-cyan-400" />
-            <span>SYSTEM: <span className="text-cyan-400 font-bold">NOMINAL</span></span>
+      {/* HEADER / TAB RIBBON */}
+      <div className="h-8 border-b border-term_border bg-term_black flex items-center justify-between select-none shrink-0">
+        <div className="flex items-center h-full">
+          <div className="px-4 text-term_amber font-bold tracking-widest border-r border-term_border flex items-center h-full text-xs">
+            ROCCO.MAGGIORE <span className="text-gray-600 font-normal ml-2">V1.0</span>
           </div>
-
-          <button 
-            onClick={() => setIsQuantOpen(true)}
-            className="flex items-center gap-2 text-sm bg-indigo-900/40 hover:bg-indigo-800 text-indigo-100 px-4 py-1.5 rounded border border-indigo-700/50 transition-colors shadow-sm"
-          >
-            <LineChart size={16} className="text-indigo-400" />
-            <span className="font-bold tracking-wide">QUANT DESK</span>
+          <button onClick={() => setActiveTab('MAP')}
+            className={`h-full px-6 text-xs font-bold uppercase transition-none border-r border-term_border ${activeTab === 'MAP' ? 'bg-term_gray text-term_cyan border-t-2 border-t-term_cyan' : 'bg-term_black text-gray-500 hover:text-gray-300 border-t-2 border-t-transparent'}`}>
+            1 MAP
           </button>
-          
-          <button 
-            onClick={() => setIsDiagnosticsOpen(true)}
-            className="flex items-center gap-2 text-sm bg-slate-800 hover:bg-slate-700 text-white px-4 py-1.5 rounded border border-slate-600 transition-colors shadow-sm"
-          >
-            <TerminalSquare size={16} className="text-green-400" />
-            <span className="font-bold tracking-wide">DIAGNOSTICS</span>
+          <button onClick={() => setActiveTab('QUANT')}
+            className={`h-full px-6 text-xs font-bold uppercase transition-none border-r border-term_border ${activeTab === 'QUANT' ? 'bg-term_gray text-term_amber border-t-2 border-t-term_amber' : 'bg-term_black text-gray-500 hover:text-gray-300 border-t-2 border-t-transparent'}`}>
+            2 QUANT
           </button>
+          <button onClick={() => setActiveTab('SYS')}
+            className={`h-full px-6 text-xs font-bold uppercase transition-none border-r border-term_border ${activeTab === 'SYS' ? 'bg-term_gray text-term_green border-t-2 border-t-term_green' : 'bg-term_black text-gray-500 hover:text-gray-300 border-t-2 border-t-transparent'}`}>
+            3 SYS
+          </button>
+        </div>
+        <div className="px-4 text-[10px] text-gray-500 flex gap-4 h-full items-center">
+          <span>DATAFEED: <span className="text-term_green font-bold">OK</span></span>
+          <span>EXEC: <span className="text-term_cyan font-bold">LIVE</span></span>
         </div>
       </div>
 
-      {/* MAIN CONTENT */}
+      {/* MAIN CONTENT WORKSPACE */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* LEFT PANEL */}
-        <div className="w-80 border-r border-[#333333] bg-[#000000] p-4 flex flex-col gap-4 z-10 shadow-xl">   
-
-          <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-sm">
-            <div className="text-xs font-bold text-white mb-1 uppercase tracking-wider flex items-center gap-2">
-              <ShieldAlert size={14} className="text-cyan-400"/> Global Op Health
+        {/* GLOBAL LEFT PANEL */}
+        <div className="w-80 border-r border-term_border bg-term_black flex flex-col z-10 shrink-0">   
+          <div className="grid grid-cols-2 gap-[1px] bg-term_border border-b border-term_border shrink-0">
+            <div className="bg-term_black p-2">
+               <span className="text-[9px] text-gray-500 tracking-widest block mb-1">GLOBAL_HEALTH</span>
+               <div className="text-term_cyan text-lg leading-none">{Number(pulse?.avg_health ?? 1.0).toFixed(2)}</div>
             </div>
-            <div className="text-3xl font-light text-white">{Number(pulse?.avg_health ?? 1.0).toFixed(2)}</div>
-            <div className="text-xs text-cyan-400 mt-1">Network Stability</div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-sm">
-            <div className="text-xs font-bold text-white mb-1 uppercase tracking-wider flex items-center gap-2">
-              <AlertTriangle size={14} className="text-red-400"/> Critical Threats
-            </div>
-            <div className="text-3xl font-light text-white">{pulse?.critical_threats || 0}</div>
-            <div className="text-xs text-red-400 mt-1">Active Chokepoints / Outages</div>
-          </div>
-
-          <div className="flex-1 bg-[#0a0a0a] border border-[#333333] rounded-none p-4 flex flex-col">
-            <h2 className="text-xs font-bold text-gray-400 mb-3 uppercase tracking-widest border-b border-[#333] pb-1">Live Signal Feed</h2>
-            
-            {/* INCREASED TEXT SIZE: text-[10px] -> text-xs */}
-            <div className="flex-1 bg-[#000000] p-3 font-mono text-xs overflow-y-auto scrollbar-thin scrollbar-thumb-[#333]">
-              {liveFeed.length === 0 && <div className="text-gray-600 italic">AWAITING_SIGNALS...</div>}
-              {liveFeed.map((msg, i) => (
-                <div key={i} className="mb-2 text-amber-400 border-b border-[#222] pb-1 break-words leading-tight">
-                  {msg}
-                </div>
-              ))}
+            <div className="bg-term_black p-2">
+               <span className="text-[9px] text-gray-500 tracking-widest block mb-1">CRIT_THREATS</span>
+               <div className="text-term_red text-lg leading-none">{pulse?.critical_threats || 0}</div>
             </div>
           </div>
+          <div className="p-2 border-b border-term_border shrink-0">
+             <div className="text-[9px] text-gray-500 tracking-widest mb-1 border-b border-term_border pb-1">VIEWPORT_TOPOLOGY</div>
+             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-gray-400 mt-2">
+               <div className="flex justify-between"><span>ASSETS:</span> <span className="text-white">{worldState.assets?.length || 0}</span></div>
+               <div className="flex justify-between"><span>HUBS:</span> <span className="text-white">{worldState.hubs?.length || 0}</span></div>
+               <div className="flex justify-between"><span>ROUTES:</span> <span className="text-white">{worldState.lines?.length || 0}</span></div>
+               <div className="flex justify-between"><span>CHOKES:</span> <span className="text-white">{worldState.chokepoints?.length || 0}</span></div>
+             </div>
+          </div>
 
+          {/* --- THE FIX: ADDED SPARKLINE TO MARKET MATRIX --- */}
+          <div className="p-2 border-b border-term_border flex flex-col h-48 shrink-0">
+             <div className="text-[9px] text-gray-500 tracking-widest mb-1 border-b border-term_border pb-1">MARKET_MATRIX</div>
+             <div className="overflow-y-auto scrollbar-thin flex-1 mt-1">
+               <table className="w-full text-[10px] text-left border-collapse">
+                 <thead>
+                   <tr className="text-gray-600">
+                     <th className="font-normal pb-1">SYM</th>
+                     <th className="font-normal pb-1 text-right">PX</th>
+                     <th className="font-normal pb-1 text-right">CHART</th>
+                   </tr>
+                 </thead>
+                 <tbody>
+                   {(pulse?.tickers || []).slice(0, 10).map(t => (
+                     <tr key={t.symbol} className="border-b border-term_border/50 hover:bg-[#111]">
+                       <td className="text-white py-1">{t.symbol}</td>
+                       <td className="text-term_amber text-right py-1">${t.price?.toFixed(2) || '0.00'}</td>
+                       <td className="py-1 flex justify-end">
+                         <Sparkline data={t.history} />
+                       </td>
+                     </tr>
+                   ))}
+                   {(!pulse?.tickers || pulse.tickers.length === 0) && (
+                      <tr><td colSpan="3" className="text-center py-2 text-gray-600 italic">No market data linked.</td></tr>
+                   )}
+                 </tbody>
+               </table>
+             </div>
+          </div>
+
+          <div className="flex-1 flex flex-col p-2 min-h-0 bg-term_black">
+             <div className="text-[9px] text-gray-500 tracking-widest mb-1 border-b border-term_border pb-1 flex justify-between">
+               <span>SYS_TAPE_OUTPUT</span>
+               <span className="text-term_green animate-pulse">●</span>
+             </div>
+             <div className="flex-1 overflow-y-auto text-[9px] pr-1 space-y-[2px] mt-1 scrollbar-thin">
+                {liveFeed.length === 0 && <div className="text-gray-600">AWAITING_DATA...</div>}
+                {liveFeed.map((msg, i) => (
+                  <div key={i} className="flex gap-2">
+                    <span className="text-gray-500 shrink-0">{msg.time}</span>
+                    <span className={`break-words ${msg.channel === 'execution_signals' ? 'text-term_amber font-bold' : 'text-gray-400'}`}>
+                      {msg.text}
+                    </span>
+                  </div>
+                ))}
+             </div>
+          </div>
         </div>
 
-        {/* MAP CONTAINER */}
-        <div className="flex-1 relative bg-void">
-          <PanopticonMap 
-            {...worldState} 
-            onFetchRequest={fetchWorldState} 
-          />
-        </div>
-      </div>
-
-      {/* QUANT DESK MODAL */}
-      {isQuantOpen && (
-        <div className="absolute inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
-          <div className="bg-[#0a0f1c] border border-indigo-900/50 w-full h-full rounded-xl shadow-2xl flex flex-col overflow-hidden">
-            
-            {/* Header */}
-            <div className="h-12 bg-slate-900 border-b border-indigo-900/50 flex items-center justify-between px-4 shadow-md">
-              <h2 className="text-indigo-100 font-bold tracking-widest flex items-center gap-2">
-                <LineChart className="text-indigo-400"/> ROCCO.AI QUANTITATIVE INTELLIGENCE
-              </h2>
-              <button onClick={() => setIsQuantOpen(false)} className="text-red-400 hover:text-red-300 transition-colors bg-slate-800 hover:bg-slate-700 p-1 rounded">
-                <X size={20} />
-              </button>
-            </div>
-            
-            {/* 3-Column Layout */}
-            <div className="flex-1 grid grid-cols-3 gap-4 p-4 min-h-0 bg-[#05080f]">
+        {/* TAB WORKSPACE */}
+        <div className="flex-1 relative bg-term_gray flex flex-col">
+          
+          {/* TAB 1: MAP + HUD */}
+          {activeTab === 'MAP' && (
+            <div className="flex-1 relative">
+              <PanopticonMap 
+                {...worldState} 
+                onFetchRequest={fetchWorldState} 
+                onSelect={handleEntitySelect}
+                selectedId={selectedEntity?.id}
+              />
               
-              {/* COL 1: Risk & Exposure */}
-              <div className="flex flex-col gap-4 min-h-0">
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded shadow-sm">
-                  <div className="text-xs text-white mb-1 font-bold tracking-wider">DAILY P&L (PAPER)</div>
-                  <div className={`text-4xl font-light flex items-center gap-2 ${pulse?.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {pulse?.pnl >= 0 ? <TrendingUp size={24}/> : <TrendingDown size={24}/>}
-                    ${Math.abs(pulse?.pnl || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}
-                  </div>
-                </div>
-                
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded shadow-sm">
-                  <div className="text-xs text-white mb-3 font-bold tracking-wider">PORTFOLIO METRICS</div>
-                  <div className="space-y-3 font-mono text-sm">
-                    <div className="flex justify-between border-b border-slate-800 pb-1">
-                      <span className="text-white">Net Liquidation</span>
-                      <span className="text-parchment font-bold">${(pulse?.balance || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                    </div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1">
-                      <span className="text-white">Global Health Factor</span>
-                      <span className="text-cyan-400">{Number(pulse?.avg_health ?? 1.0).toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1">
-                      <span className="text-white">Active Alpha Signals</span>
-                      <span className="text-yellow-400">{tradeSignals.length}</span>
-                    </div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1">
-                      <span className="text-white">Risk Utilization</span>
-                      <span className="text-green-400">NOMINAL</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* NEW: Active Positions Ledger */}
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded shadow-sm flex-1 flex flex-col min-h-0">
-                  <div className="text-xs text-white mb-3 font-bold tracking-wider">ACTIVE POSITIONS</div>
-                  <div className="flex-1 overflow-y-auto space-y-2 font-mono text-xs scrollbar-thin scrollbar-thumb-slate-700 pr-2">
-                    {Object.values(activePositions).length === 0 && (
-                      <div className="text-gray-500 italic text-center mt-2">No active holdings.</div>
-                    )}
-                    {Object.values(activePositions).map((pos, idx) => (
-                      <div key={idx} className="flex justify-between border-b border-slate-800/50 pb-1">
-                        <span className="text-white font-bold">{pos.symbol}</span>
+              {/* --- HUD OVERLAY --- */}
+              <div className="absolute bottom-0 left-0 right-0 z-30 pointer-events-none flex flex-col">
+                <div className="px-4 pb-2 pointer-events-auto flex gap-2 overflow-x-auto no-scrollbar items-end min-h-[80px]">
+                  {/* CONDITIONAL HUD DECK */}
+                  {selectedEntity ? (
+                    // TARGET LOCK TELEMETRY
+                    <div className="bg-term_black/95 border border-term_cyan p-3 flex flex-col gap-2 backdrop-blur-md w-full max-w-4xl shadow-2xl relative animate-in fade-in slide-in-from-bottom-2">
+                      <button 
+                        onClick={() => setSelectedEntity(null)}
+                        className="absolute top-1 right-2 text-gray-500 hover:text-white text-[10px]"
+                      >
+                        [CLOSE_X]
+                      </button>
+                      <div className="flex justify-between items-start border-b border-term_border pb-1">
+                        <div>
+                          <span className="text-term_cyan font-bold text-xs uppercase tracking-tighter"> TARGET_LOCK: {selectedEntity.name}</span>
+                          <div className="text-[10px] text-gray-400 uppercase">UID: {selectedEntity.id} | TYPE: {selectedEntity.type}</div>
+                        </div>
                         <div className="text-right">
-                          <span className={pos.position > 0 ? "text-green-400" : "text-red-400"}>
-                            {pos.position > 0 ? "+" : ""}{pos.position}
+                          <span className="text-[10px] text-gray-500 block">LOCAL_OP_STATUS</span>
+                          <span className={`font-bold text-sm ${selectedEntity.op_health > 0.8 ? 'text-term_green' : 'text-term_red'}`}>
+                            {((selectedEntity.op_health || 1) * 100).toFixed(1)}% NOMINAL
                           </span>
-                          <span className="text-gray-500 ml-2">@ ${pos.average_cost?.toFixed(2)}</span>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* COL 2: Market Matrix (Tickers) */}
-              <div className="bg-slate-900 border border-slate-800 rounded flex flex-col min-h-0">
-                <div className="p-3 border-b border-slate-800 text-xs text-indigo-400 font-bold tracking-wider">
-                  MARKET MATRIX
-                </div>
-                <div className="flex-1 overflow-y-auto p-2 scrollbar-thin scrollbar-thumb-slate-700">
-                  <table className="w-full text-left font-mono text-xs">
-                    <thead>
-                      <tr className="text-white border-b border-slate-800">
-                        <th className="pb-2 pl-2">SYM</th>
-                        <th className="pb-2 text-right">PRICE</th>
-                        <th className="pb-2 text-right">IMPLIED VOL</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(pulse?.tickers || []).map((t, i) => (
-                        <tr key={i} className="border-b border-slate-800/50 hover:bg-white/5 transition-colors">
-                          <td className="py-2 pl-2 text-white font-bold">{t.symbol}</td>
-                          <td className="py-2 text-right text-white">${(t.price || 0).toFixed(2)}</td>
-                          <td className="py-2 text-right text-white">{((t.vol || 0) * 100).toFixed(1)}%</td>
-                        </tr>
-                      ))}
-                      {(!pulse?.tickers || pulse.tickers.length === 0) && (
-                        <tr><td colSpan="3" className="text-center py-4 text-white italic">No market data linked.</td></tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* COL 3: Live Execution Tape */}
-              <div className="bg-slate-900 border border-slate-800 rounded flex flex-col min-h-0">
-                <div className="p-3 border-b border-slate-800 text-xs text-yellow-500 font-bold tracking-wider flex justify-between items-center">
-                  <span>EXECUTION TAPE</span>
-                  <span className="text-green-500 animate-pulse">●</span>
-                </div>
-                <div className="flex-1 overflow-y-auto p-2 scrollbar-thin scrollbar-thumb-slate-700 flex flex-col gap-2">
-                  {tradeSignals.length === 0 && (
-                    <div className="text-white italic text-center mt-4 text-xs font-mono">Awaiting Brainstem signals...</div>
-                  )}
-                  {tradeSignals.map((sig, i) => (
-                    <div key={i} className="bg-[#0a0f1c] border-l-2 border-yellow-500 p-2 rounded text-xs font-mono">
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="font-bold text-yellow-500">{sig.action} {sig.sym || sig.symbol}</span>
-                        <span className="text-slate-500">{new Date(sig.ts || sig.timestamp).toLocaleTimeString()}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-x-4 text-white">
-                        <div>Target: <span className="text-green-400">${sig.tgt?.toFixed(2) || 'N/A'}</span></div>
-                        <div>Stop: <span className="text-red-400">${sig.hard?.toFixed(2) || 'N/A'}</span></div>
-                        <div>Conf: <span className="text-white">{(sig.conf * 100).toFixed(0)}%</span></div>
-                        <div>Risk: <span className="text-white">${sig.risk?.toFixed(0) || 'N/A'}</span></div>
+                      
+                      {/* DYNAMIC TELEMETRY GRID */}
+                      <div className="grid grid-cols-4 gap-4 py-1">
+                        <div className="border-l border-term_border pl-2">
+                          <span className="text-[9px] text-gray-500 block">EST_VALUATION</span>
+                          <span className="text-white text-xs font-bold">${selectedEntity.npv ? selectedEntity.npv.toLocaleString() : '---'}</span>
+                        </div>
+                        <div className="border-l border-term_border pl-2">
+                          <span className="text-[9px] text-gray-500 block">DISCOUNT_RATE (WACC)</span>
+                          <span className="text-term_amber text-xs font-bold">{selectedEntity.wacc ? (selectedEntity.wacc * 100).toFixed(2) + '%' : '---'}</span>
+                        </div>
+                        <div className="border-l border-term_border pl-2">
+                          <span className="text-[9px] text-gray-500 block">THROUGHPUT_OUTPUT</span>
+                          <span className="text-term_cyan text-xs font-bold">{selectedEntity.throughput_tonnes || selectedEntity.output_mw || 'SECURE'}</span>
+                        </div>
+                        <div className="border-l border-term_border pl-2">
+                          <span className="text-[9px] text-gray-500 block">LAST_SYNC_TS</span>
+                          <span className="text-gray-400 text-[9px]">{selectedEntity.last_update ? new Date(selectedEntity.last_update).toLocaleTimeString() : 'N/A'}</span>
+                        </div>
                       </div>
                     </div>
-                  ))}
+                  ) : (
+                    // THREAT HORIZON (Default state)
+                    recentThreats.length === 0 ? (
+                      <div className="bg-term_black/80 border border-term_border p-2 text-[10px] text-gray-500 backdrop-blur-sm">
+                        [SYS] NO RECENT ANOMALIES DETECTED
+                      </div>
+                    ) : (
+                      recentThreats.map((t, idx) => {
+                        const isEQ = t.type === 'EARTHQUAKE';
+                        const isFire = t.type === 'WILDFIRE';
+                        const color = (isEQ || isFire) ? 'border-term_red text-term_red' : 'border-term_amber text-term_amber';
+                        const icon = isEQ ? <Activity size={10}/> : isFire ? <Flame size={10}/> : <AlertTriangle size={10}/>;
+                        
+                        return (
+                          <div key={idx} className={`bg-term_black/90 border ${color} p-2 flex flex-col gap-1 backdrop-blur-sm w-64 shrink-0 shadow-lg cursor-pointer hover:bg-[#111] transition-colors`}>
+                            <div className="flex justify-between items-center border-b border-gray-800 pb-1">
+                              <span className="font-bold text-[10px] flex items-center gap-1">{icon} {t.type}</span>
+                              <span className="text-[9px] text-gray-400">{new Date(t.ts).toLocaleTimeString('en-US', {hour12: false})}</span>
+                            </div>
+                            <div className="text-[10px] text-white">
+                              SEVERITY: <span className="font-bold">{typeof t.severity === 'number' ? t.severity.toFixed(1) : t.severity}</span>
+                            </div>
+                            <div className="text-[9px] text-gray-400 flex justify-between">
+                              <span>LAT: {t.lat}</span>
+                              <span>LON: {t.lon}</span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )
+                  )}
+                </div>
+
+                {/* GLOBAL MARQUEE */}
+                <div className="h-6 bg-term_black border-t border-term_border flex items-center overflow-hidden pointer-events-auto select-none">
+                  <div className="animate-marquee text-[11px] text-term_cyan font-bold tracking-widest">
+                    {marqueeString} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {marqueeString}
+                  </div>
                 </div>
               </div>
-
             </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* DIAGNOSTICS MODAL */}
-      {isDiagnosticsOpen && (
-        <div className="absolute inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
-          <div className="bg-[#0a0f1c] border border-slate-600 w-full h-full rounded-xl shadow-2xl flex flex-col overflow-hidden">
-            
-            <div className="h-12 bg-slate-800 border-b border-slate-600 flex items-center justify-between px-4 shadow-md">
-              <h2 className="text-white font-bold tracking-widest flex items-center gap-2">
-                <TerminalSquare className="text-cyan-400"/> ROCCO.AI SYSTEM DIAGNOSTICS
-              </h2>
-              <button onClick={() => setIsDiagnosticsOpen(false)} className="text-red-400 hover:text-red-300 transition-colors bg-slate-700/50 hover:bg-slate-700 p-1 rounded">
-                <X size={20} />
-              </button>
-            </div>
-            
-            {/* 3x2 GRID LAYOUT - FIXED OVERFLOW AND STYLING */}
-            <div className="flex-1 grid grid-cols-3 grid-rows-2 gap-[1px] bg-[#333333] min-h-0">
-              {diagnosticPanes.map((pane) => (
-                <div key={pane.id} className="bg-[#000000] p-3 font-mono text-xs overflow-hidden flex flex-col min-h-0 min-w-0">
-                  <div className={`${pane.color} font-bold mb-2 border-b border-[#333] pb-1 flex justify-between shrink-0`}>
-                    <span>{pane.title}</span>
-                    <span className="text-green-500 animate-pulse">●</span>
-                  </div>
-                  
-                  <div className="flex-1 overflow-y-auto flex flex-col-reverse scrollbar-thin scrollbar-thumb-[#333] pr-2">
-                    {(systemLogs[pane.id] || []).length === 0 && (
-                      <div className="text-gray-600 italic mt-auto">STREAM_PENDING...</div>
-                    )}
-                    {(systemLogs[pane.id] || []).slice().reverse().map((logLine, idx) => (
-                      <div key={idx} className="!text-gray-300 break-all mb-1 pb-1 shrink-0 leading-tight">
-                        {logLine}
-                      </div>
-                    ))}
-                  </div>
+          {/* TAB 2: QUANT */}
+          {activeTab === 'QUANT' && (
+            <div className="h-full flex flex-col p-2 gap-2 bg-term_black">
+              <div className="grid grid-cols-4 gap-[1px] bg-term_border shrink-0 border border-term_border">
+                <div className="bg-term_black p-2 flex flex-col">
+                  <span className="text-[9px] text-gray-500 tracking-widest">NET_LIQUIDATION</span>
+                  <span className="text-xl text-white">${(pulse?.balance || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
                 </div>
-              ))}
+                <div className="bg-term_black p-2 flex flex-col">
+                  <span className="text-[9px] text-gray-500 tracking-widest">DAILY_PNL</span>
+                  <span className={`text-xl ${pulse?.pnl >= 0 ? 'text-term_green' : 'text-term_red'}`}>
+                    {pulse?.pnl >= 0 ? '+' : '-'}${(Math.abs(pulse?.pnl || 0)).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                  </span>
+                </div>
+                <div className="bg-term_black p-2 flex flex-col">
+                  <span className="text-[9px] text-gray-500 tracking-widest">ACTIVE_POSITIONS</span>
+                  <span className="text-xl text-term_cyan">{Object.keys(activePositions).length}</span>
+                </div>
+                <div className="bg-term_black p-2 flex flex-col">
+                  <span className="text-[9px] text-gray-500 tracking-widest">PENDING_SIGNALS</span>
+                  <span className="text-xl text-term_amber">{tradeSignals.length}</span>
+                </div>
+              </div>
+              
+              <div className="flex-1 grid grid-cols-12 gap-2 min-h-0">
+                <div className="col-span-5 border border-term_border bg-term_black flex flex-col">
+                   <div className="bg-term_gray text-term_cyan text-[10px] font-bold p-1 px-2 border-b border-term_border tracking-widest uppercase">
+                     &gt; PORTFOLIO_LEDGER
+                   </div>
+                   <div className="flex-1 overflow-auto scrollbar-thin">
+                      <table className="w-full text-[10px] text-right border-collapse">
+                         <thead className="sticky top-0 bg-term_black border-b border-term_border text-gray-500">
+                            <tr>
+                              <th className="font-normal p-1 pl-2 text-left">SYM</th>
+                              <th className="font-normal p-1">POS</th>
+                              <th className="font-normal p-1">AVG_COST</th>
+                              <th className="font-normal p-1">MKT_PX</th>
+                              <th className="font-normal p-1 pr-2">U_PNL</th>
+                            </tr>
+                         </thead>
+                         <tbody>
+                            {Object.values(activePositions).map((pos, i) => (
+                              <tr key={i} className="border-b border-term_border/30 hover:bg-[#111]">
+                                <td className="p-1 pl-2 text-left text-white font-bold">{pos.symbol}</td>
+                                <td className={`p-1 font-bold ${pos.position > 0 ? 'text-term_green' : pos.position < 0 ? 'text-term_red' : 'text-gray-400'}`}>
+                                  {pos.position > 0 ? '+' : ''}{pos.position}
+                                </td>
+                                <td className="p-1 text-gray-300">${pos.average_cost?.toFixed(2)}</td>
+                                <td className="p-1 text-term_amber">${pos.market_price?.toFixed(2)}</td>
+                                <td className={`p-1 pr-2 ${pos.unrealized_pnl >= 0 ? 'text-term_green' : 'text-term_red'}`}>
+                                  {pos.unrealized_pnl > 0 ? '+' : ''}${pos.unrealized_pnl?.toFixed(2)}
+                                </td>
+                              </tr>
+                            ))}
+                            {Object.keys(activePositions).length === 0 && (
+                              <tr><td colSpan="5" className="text-center p-4 text-gray-600 italic">NO ACTIVE POSITIONS</td></tr>
+                            )}
+                         </tbody>
+                      </table>
+                   </div>
+                </div>
+                
+                <div className="col-span-4 border border-term_border bg-term_black flex flex-col">
+                   <div className="bg-term_gray text-term_amber text-[10px] font-bold p-1 px-2 border-b border-term_border tracking-widest uppercase flex justify-between">
+                     <span>&gt; EXECUTION_BLOTTER</span>
+                     <span className="text-term_green animate-pulse">●</span>
+                   </div>
+                   <div className="flex-1 overflow-auto scrollbar-thin">
+                      <table className="w-full text-[10px] text-right border-collapse">
+                         <thead className="sticky top-0 bg-term_black border-b border-term_border text-gray-500">
+                            <tr>
+                              <th className="font-normal p-1 pl-2 text-left">TIME</th>
+                              <th className="font-normal p-1 text-left">ACT</th>
+                              <th className="font-normal p-1 text-left">SYM</th>
+                              <th className="font-normal p-1">CONF</th>
+                              <th className="font-normal p-1 pr-2">RISK</th>
+                            </tr>
+                         </thead>
+                         <tbody>
+                            {tradeSignals.map((sig, i) => {
+                               const timeStr = new Date(sig.ts || sig.timestamp).toLocaleTimeString('en-US', {hour12:false});
+                               const isBuy = sig.side === 'BUY';
+                               return (
+                                 <tr key={i} className="border-b border-term_border/30 hover:bg-[#111]">
+                                   <td className="p-1 pl-2 text-left text-gray-500">{timeStr}</td>
+                                   <td className={`p-1 text-left font-bold ${isBuy ? 'text-term_green' : 'text-term_red'}`}>{sig.side}</td>
+                                   <td className="p-1 text-left text-white">{sig.sym || sig.symbol}</td>
+                                   <td className="p-1 text-term_cyan">{(sig.conf * 100).toFixed(0)}%</td>
+                                   <td className="p-1 pr-2 text-gray-300">${sig.risk?.toFixed(0)}</td>
+                                 </tr>
+                               )
+                            })}
+                            {tradeSignals.length === 0 && (
+                              <tr><td colSpan="5" className="text-center p-4 text-gray-600 italic">AWAITING SIGNALS...</td></tr>
+                            )}
+                         </tbody>
+                      </table>
+                   </div>
+                </div>
+
+                {/* --- THE FIX: ADDED SPARKLINE TO QUANT DESK WATCHLIST --- */}
+                <div className="col-span-3 border border-term_border bg-term_black flex flex-col">
+                   <div className="bg-term_gray text-[#a855f7] text-[10px] font-bold p-1 px-2 border-b border-term_border tracking-widest uppercase">
+                     &gt; WATCHLIST
+                   </div>
+                   <div className="flex-1 overflow-auto scrollbar-thin">
+                      <table className="w-full text-[10px] text-right border-collapse">
+                         <thead className="sticky top-0 bg-term_black border-b border-term_border text-gray-500">
+                            <tr>
+                              <th className="font-normal p-1 pl-2 text-left">SYM</th>
+                              <th className="font-normal p-1">LAST</th>
+                              <th className="font-normal p-1 text-right">CHART</th>
+                            </tr>
+                         </thead>
+                         <tbody>
+                            {(pulse?.tickers || []).map((t, i) => (
+                              <tr key={i} className="border-b border-term_border/30 hover:bg-[#111]">
+                                <td className="p-1 pl-2 text-left text-white font-bold">{t.symbol}</td>
+                                <td className="p-1 text-term_amber">${t.price?.toFixed(2) || '0.00'}</td>
+                                <td className="py-1 flex justify-end pr-2">
+                                  <Sparkline data={t.history} />
+                                </td>
+                              </tr>
+                            ))}
+                            {(!pulse?.tickers || pulse.tickers.length === 0) && (
+                              <tr><td colSpan="3" className="text-center p-4 text-gray-600 italic">NO DATA</td></tr>
+                            )}
+                         </tbody>
+                      </table>
+                   </div>
+                </div>
+              </div>
             </div>
+          )}
 
-          </div>
+          {/* TAB 3: SYS DIAGNOSTICS */}
+          {activeTab === 'SYS' && (
+            <div className="h-full flex flex-col p-2 gap-2 bg-term_black">
+              <div className="bg-term_gray text-term_green text-[10px] font-bold p-1 px-2 border border-term_border tracking-widest uppercase flex justify-between shrink-0">
+                <span>&gt; SYSTEM_TTY_MULTIPLEXER</span>
+                <span className="animate-pulse">_</span>
+              </div>
+              <div className="flex-1 grid grid-cols-3 grid-rows-2 gap-[1px] bg-term_border min-h-0 border border-term_border">
+                {diagnosticPanes.map((pane) => {
+                  const logs = systemLogs[pane.id] || [];
+                  return (
+                    <div key={pane.id} className="bg-term_black p-2 flex flex-col min-h-0 relative group">
+                      <div className="text-[9px] font-bold mb-1 border-b border-[#222] pb-1 flex justify-between select-none">
+                        <span className="text-gray-600">
+                          root@rocco-nexus:~# tail -f <span className={pane.color}>{pane.id}.log</span>
+                        </span>
+                        <span className={`${pane.color} animate-pulse opacity-80`}>●</span>
+                      </div>
+                      <div className="flex-1 overflow-y-auto flex flex-col-reverse text-[9px] font-mono scrollbar-thin leading-tight pr-1">
+                        {logs.length === 0 && (
+                          <div className="text-gray-600 mt-auto flex items-center">
+                            <span className={pane.color + " mr-2"}>&gt;</span> AWAITING_STDOUT... <span className="animate-pulse ml-1 bg-gray-500 w-1.5 h-3 inline-block"></span>
+                          </div>
+                        )}
+                        {logs.slice().reverse().map((logLine, idx) => (
+                          <div key={idx} className={`break-all mb-[3px] hover:bg-[#111] transition-colors ${idx === 0 ? 'text-gray-100 font-bold' : 'text-gray-500'}`}>
+                            <span className={`${pane.color} opacity-40 mr-2 select-none`}>&gt;</span>
+                            {logLine}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
         </div>
-      )}
-
+      </div>
     </div>
   );
 }

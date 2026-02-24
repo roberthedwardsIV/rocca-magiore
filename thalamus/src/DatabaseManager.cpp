@@ -70,6 +70,11 @@ void save_to_database(const json& state) {
             W.exec(sql);
         }
         else if (type == "mine" || type == "refinery" || type == "smelter" || type == "power_plant" || type == "port") {
+            
+            // THE FIX: Ignore NLP 'Ghost' infrastructure (e.g. NEWS_INFRA_477) 
+            // Postgres expects a strict integer for physical asset IDs
+            if (id.find("NEWS_INFRA") != std::string::npos) return;
+
             long long ts = state.value("timestamp", state.value("last_update", 0LL));
             
             std::string sql = "INSERT INTO asset_states (asset_id, op_health, fin_health, threat_level, last_update) "
