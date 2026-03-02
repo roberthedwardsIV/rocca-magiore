@@ -50,8 +50,8 @@ std::string fetch_rss_feed() {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
-
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);        // Wait up to 60 seconds
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);

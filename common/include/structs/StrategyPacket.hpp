@@ -1,3 +1,4 @@
+// VVV FILE: ./common/include/structs/StrategyPacket.hpp VVV
 #ifndef STRATEGY_PACKET_HPP
 #define STRATEGY_PACKET_HPP
 
@@ -9,36 +10,33 @@ using json = nlohmann::json;
 
 struct StrategyPacket {
     // --- 1. IDENTITY ---
-    std::string strategy_id;    // UUID (e.g., "EQ_CHILE_COPPER_001")
-    std::string symbol;         // "HG"
-    long long timestamp;        // Unix Timestamp of signal generation
+    std::string strategy_id;    
+    std::string symbol;         
+    long long timestamp;        
 
     // --- 2. STRATEGY INTENT ---
-    std::string type;           // "DELTA" (Directional), "VOLATILITY" (Vega/Straddle)
+    std::string type;           // "DELTA" (Stock), "FUTURE", "OPTION"
     std::string action;         // "OPEN", "UPDATE", "CLOSE", "FLATTEN"
     std::string side;           // "BUY", "SELL"
     
     // --- 3. THALAMUS INPUTS (The "Why") ---
-    double fair_value;          // Where the model thinks price should be
-    double market_price;        // Where price IS right now
-    double confidence_score;    // 0.0 to 1.0 (0.9 = High Confidence)
-    double volatility_forecast; // Predicted ATR (Crucial for Vol plays)
-    
+    double fair_value;          
+    double market_price;        
+    double confidence_score;    
+    double volatility_forecast; 
+    double z_score;             // NEW: Required by Brainstem to confirm trade direction
+
     // --- 4. RISK CONSTRAINTS (The "Limits") ---
-    double suggested_risk;      // Max dollars to lose on this specific trade
-    double catastrophe_stop;    // Hard Stop Price (The "Oh Sh*t" line)
-    double soft_stop;           // Soft Stop Price (Thesis invalidation)
-    double target_price;        // Take Profit Price
+    double suggested_risk;      
+    double catastrophe_stop;    
+    double soft_stop;           
+    double target_price;        
 
     // --- HELPER: RATIO CHECK ---
-    // Returns Reward:Risk ratio. Risk Manager can reject if < 2.0
     double get_rr_ratio() const {
         double risk = std::abs(market_price - soft_stop);
         double reward = std::abs(target_price - market_price);
-        
-        // Safety for zero division
-        if (risk <= 0.0001) return 0.0; 
-        
+        if (risk <= 0.0001) return 0.0; // Prevent div by zero
         return reward / risk;
     }
 
@@ -49,6 +47,7 @@ struct StrategyPacket {
             {"type", type}, {"act", action}, {"side", side},
             {"fv", fair_value}, {"mkt", market_price},
             {"conf", confidence_score}, {"vol", volatility_forecast},
+            {"z_score", z_score}, // NEW: Injected into JSON
             {"risk", suggested_risk}, {"hard", catastrophe_stop},
             {"soft", soft_stop}, {"tgt", target_price}
         };
@@ -66,6 +65,7 @@ struct StrategyPacket {
         p.market_price = j.value("mkt", 0.0);
         p.confidence_score = j.value("conf", 0.0);
         p.volatility_forecast = j.value("vol", 0.0);
+        p.z_score = j.value("z_score", 0.0); // NEW: Extracted from JSON
         p.suggested_risk = j.value("risk", 0.0);
         p.catastrophe_stop = j.value("hard", 0.0);
         p.soft_stop = j.value("soft", 0.0);
@@ -75,3 +75,4 @@ struct StrategyPacket {
 };
 
 #endif // STRATEGY_PACKET_HPP
+// ^^^ END FILE: ./common/include/structs/StrategyPacket.hpp ^^^

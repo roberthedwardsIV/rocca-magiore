@@ -219,7 +219,7 @@ class RadioNewsSignalProcessor:
                 for sig in signals:
                     # FIX 3: Verify payload integrity before sending
                     if sig.get("entity_type") and isinstance(sig["entity_type"], str):
-                        print(f"[BRAIN] SIGNAL GENERATED: {sig['entity_type']}")
+                        #print(f"[BRAIN] SIGNAL GENERATED: {sig['entity_type']}")
                         await redis_client.lpush("raw_signals", json.dumps(sig))
                     else:
                         print(f"[BRAIN WARN] Dropped malformed signal: {sig}")

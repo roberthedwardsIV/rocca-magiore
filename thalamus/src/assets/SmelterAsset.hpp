@@ -1,3 +1,4 @@
+// VVV FILE: ./thalamus/src/assets/SmelterAsset.hpp VVV
 #ifndef SMELTER_ASSET_HPP
 #define SMELTER_ASSET_HPP
 
@@ -14,11 +15,15 @@ struct SmelterState {
     float current_throughput_tpd;  
     float recovery_rate;           
     
+    // Financials
     float treatment_charges;       
     float refining_charges;        
     float acid_price;              
     float energy_cost_mwh;         
+    float cost_per_unit;           // NEW: SEC Base variable cost
+    float fixed_costs_annual;      // NEW: SEC Capex
     
+    // Outputs
     float revenue_annual;
     float opex_annual;
     float ebitda;
@@ -38,7 +43,7 @@ public:
     void process_packet(const json& sig) override;
     json get_json_state() const override;
     
-    void update(long long current_time); // Removed 'override'
+    void update(long long current_time); 
 
 protected:
     SmelterState current_state;
@@ -49,3 +54,4 @@ protected:
 };
 
 #endif
+// ^^^ END FILE: ./thalamus/src/assets/SmelterAsset.hpp ^^^

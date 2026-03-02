@@ -20,4 +20,9 @@ lxml
 pdfplumber
 pulp
 geopy
-
+openai
+pydantic
+edgartools
+unstructured
+lxml
+markdown

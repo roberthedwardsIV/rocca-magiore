@@ -1,3 +1,4 @@
+// VVV FILE: ./thalamus/src/assets/RefineryAsset.hpp VVV
 #ifndef REFINERY_ASSET_HPP
 #define REFINERY_ASSET_HPP
 
@@ -12,8 +13,8 @@ struct RefineryState {
 
     float metal_spot_price;   // $/tonne
     float ore_cost_basis;     // $/tonne
-    float processing_cost;    // $/tonne
-    float fixed_costs;        // Annual Fixed ($)
+    float processing_cost;    // $/tonne (SEC COGS)
+    float fixed_costs;        // Annual Fixed/Capex ($) (SEC Capex)
     float base_multiple;      // EV/EBITDA
 
     float recovery_rate;      // % extracted (0.0 - 1.0)
@@ -46,3 +47,4 @@ protected:
 };
 
 #endif
+// ^^^ END FILE: ./thalamus/src/assets/RefineryAsset.hpp ^^^

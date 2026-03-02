@@ -1,7 +1,8 @@
+// VVV FILE: ./thalamus/src/Dispatcher.cpp VVV
 /**
 * Dispatcher.cpp: Central nervous system router.
 * Directs raw signals to specific handlers based on entity_type.
-* Ensures infrastructure signals reach Routes, Hubs, and Chokepoints.
+* Ensures infrastructure and financial signals reach their targets.
 */
 #include "Dispatcher.hpp"
 #include "GlobalRegistry.hpp"
@@ -43,6 +44,8 @@ void Dispatcher::route_signal(const json& sig) {
     if (std::find(PERSISTENT_TYPES.begin(), PERSISTENT_TYPES.end(), type) != PERSISTENT_TYPES.end()) {
         save_to_database(sig);
     }
+    
+    // 1. DIRECT INFRASTRUCTURE ROUTING
     if (sig.contains("asset_id")) {
         handle_asset_signal(sig);
         return;
@@ -57,7 +60,7 @@ void Dispatcher::route_signal(const json& sig) {
         return;
     }
 
-    // 1. MACRO ECONOMIC DATA
+    // 2. MACRO ECONOMIC DATA (FRED Updates)
     if (type == "macro_economic") {
         double rf = sig["data"].value("risk_free_rate", 0.045);
         double spread = sig["data"].value("corporate_spread", 0.015);
@@ -66,45 +69,66 @@ void Dispatcher::route_signal(const json& sig) {
         MacroData current = TickerRegistry::get_macro_data();
         TickerRegistry::update_macro_data(rf, spread, current.equity_risk_premium, ts);
 
+        // A macro shift changes WACC for everything. Force a global recalculation.
         GlobalRegistry::for_each_asset([&sig](std::shared_ptr<BaseAsset> asset) {
             asset->process_packet(sig);
         });
-        std::cout << "[DISPATCHER] FRED Rates Updated." << std::endl;
+        std::cout << "[DISPATCHER] FRED Rates Updated. Global WACC Repriced." << std::endl;
     }
-    // 2. DISASTER EVENTS
+    
+    // 3. DISASTER EVENTS (Earthquakes, Fires)
     else if (type == "earthquake" || type == "wildfire" || type == "environment") {
         handle_event_signal(sig);
     }
-    // 7. FINANCIAL INSTRUMENTS
+    
+    // 4. FINANCIAL INSTRUMENTS (Live IBKR quotes)
     else if (type == "stock" || type == "future" || 
              type == "option" || type == "commodity_spot" || type == "ticker_update") {
         handle_ticker_signal(sig);
     }
+    
+    // 5. CORPORATE EVENTS (The SEC Auditor Pulse)
+    else if (type == "financial_filing") {
+        std::cout << "[DISPATCHER] SEC Auditor Pulse Received for " << sig.value("symbol", "UNKNOWN") << ". Triggering Ticker Reprice." << std::endl;
+        handle_ticker_signal(sig);
+    }
+    
+    // 6. SILENT FALLBACK
     else {
         if (type != "Unknown" && type != "unknown" && type != "signal" && type != "keepalive" &&
             type != "sand" && type != "aggregate" && type != "clay" && type != "kaolin" && type != "phosphate") {
-            //std::cerr << "[DISPATCHER] Warning: Unhandled entity type: " << type << std::endl;
+            // Unhandled types are safely ignored to prevent log spam
         }
     }
 }
 
 // --- HANDLERS ---
 
+void Dispatcher::handle_asset_signal(const json& sig) {
+    int id = sig.value("asset_id", -1);
+    if (id == -1) return;
+
+    auto asset = GlobalRegistry::get_asset(id);
+    if (asset) {
+        // [TELEMETRY BRIDGE] Verify SEC data is hitting the physical asset
+        if (sig.value("category", "") == "filing") {
+            std::cout << "[DISPATCHER] Injecting SEC Ground-Truth into Asset ID: " << id << std::endl;
+        }
+
+        // Pass flat or nested data safely
+        asset->process_packet(sig.contains("data") ? sig["data"] : sig);        
+        
+        // This triggers the SignalEngine to evaluate if the NPV change warrants a trade
+        Propagator::propagate_asset_change(id); 
+    }
+}
+
 void Dispatcher::handle_event_signal(const json& sig) {
     std::string id = safe_string(sig, "entity_id", "unknown");
     if (id == "unknown") id = safe_string(sig, "id", "unknown");
 
-    float lat = 0.0f; 
-    float lon = 0.0f;
-    
-    if (sig.contains("data")) {
-        lat = sig["data"].value("lat", 0.0f);
-        lon = sig["data"].value("lon", 0.0f);
-    } else {
-        lat = sig.value("lat", 0.0f);
-        lon = sig.value("lon", 0.0f);
-    }
-
+    float lat = sig.contains("data") ? sig["data"].value("lat", 0.0f) : sig.value("lat", 0.0f);
+    float lon = sig.contains("data") ? sig["data"].value("lon", 0.0f) : sig.value("lon", 0.0f);
     long long timestamp = sig.value("timestamp", 0LL);
     std::string type = safe_string(sig, "entity_type", "");
 
@@ -148,21 +172,9 @@ void Dispatcher::handle_event_signal(const json& sig) {
     }
 }
 
-void Dispatcher::handle_asset_signal(const json& sig) {
-    int id = sig.value("asset_id", -1);
-    if (id == -1) return;
-
-    auto asset = GlobalRegistry::get_asset(id);
-    if (asset) {
-        asset->process_packet(sig.contains("data") ? sig["data"] : sig);        
-        Propagator::propagate_asset_change(id); 
-    }
-}
-
 void Dispatcher::handle_route_signal(const json& sig) {
     long long id = sig.value("line_id", -1LL);
     std::string type = safe_string(sig, "entity_type", "");
-    
     if (id == -1) return;
 
     auto route = GlobalRegistry::get_route(id, type);
@@ -175,7 +187,6 @@ void Dispatcher::handle_route_signal(const json& sig) {
 void Dispatcher::handle_hub_signal(const json& sig) {
     long long id = sig.value("hub_id", -1LL);
     if (id == -1) id = sig.value("asset_id", -1LL); 
-    
     std::string type = safe_string(sig, "entity_type", "");
     if (id == -1) return;
 
@@ -190,7 +201,6 @@ void Dispatcher::handle_hub_signal(const json& sig) {
 void Dispatcher::handle_chokepoint_signal(const json& sig) {
     int id = sig.value("cp_id", -1);
     if (id == -1) id = sig.value("id", -1);
-
     std::string type = safe_string(sig, "entity_type", "");
     if (id == -1) return;
 
@@ -207,6 +217,7 @@ void Dispatcher::handle_ticker_signal(const json& sig) {
 
     auto ticker = TickerRegistry::get_ticker(symbol);
     if (ticker) {
+        // Feed the data so the ticker can recalculate its Fair Value SOTP
         ticker->process_quote(sig);
     }
 }
@@ -224,9 +235,10 @@ void Dispatcher::trigger_twitter_recon(const std::string& id, const std::string&
         std::string payload = task.dump();
         redisCommand(c, "PUBLISH twitter_recon_tasks %s", payload.c_str());
         redisFree(c);
-        std::cout << "[DISPATCHER] Recon dispatched: " << id << std::endl;
+        std::cout << "[DISPATCHER] X/Twitter Recon dispatched: " << id << std::endl;
     } else {
         if(c) redisFree(c);
         std::cerr << "[DISPATCHER] Redis connection failed for Recon trigger." << std::endl;
     }
 }
+// ^^^ END FILE: ./thalamus/src/Dispatcher.cpp ^^^

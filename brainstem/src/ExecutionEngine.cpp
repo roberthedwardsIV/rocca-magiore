@@ -46,20 +46,20 @@ void ExecutionEngine::handle_thalamus_signal(const json& signal) {
     std::lock_guard<std::mutex> lock(engine_mtx);
     
     if (!is_ready) {
-        std::cerr << "[BRAINSTEM] Warning: IBKR Gateway not ready (No Valid ID). Dropping signal." << std::endl;
+        std::cerr << "[BRAINSTEM] Warning: IBKR Gateway not ready. Dropping signal." << std::endl;
         return;
     }
 
     std::string symbol = signal.value("symbol", "");
     if (symbol.empty()) return;
 
-    // --- PERMISSION GATE IDENTIFIER ---
     std::string inst_type = signal.value("instrument_type", "STOCK"); 
 
     if (market_cache.find(symbol) == market_cache.end()) {
         std::cerr << "[BRAINSTEM] No market data for " << symbol << ". Ignoring signal." << std::endl;
         return;
     }
+    
     MarketData mkt = market_cache[symbol];
     if (mkt.last <= 0) mkt.last = (mkt.bid + mkt.ask) / 2.0; 
 
@@ -72,9 +72,7 @@ void ExecutionEngine::handle_thalamus_signal(const json& signal) {
     else if (z_score < -2.0) { packet.action = "OPEN"; packet.side = "SELL"; }
     else return; 
 
-    // Inject instrument type for RiskManager constraints
     packet.type = (inst_type == "OPTION") ? "OPTION" : "DELTA"; 
-    
     packet.market_price = (packet.side == "BUY") ? mkt.ask : mkt.bid;
     packet.fair_value = signal.value("fair_value", packet.market_price); 
     packet.volatility_forecast = signal.value("volatility", packet.market_price * 0.015);
@@ -94,7 +92,6 @@ void ExecutionEngine::handle_thalamus_signal(const json& signal) {
     
     packet.suggested_risk = 1000.0; 
 
-    // --- FUTURE MASKING ---
     if (inst_type == "FUTURE" || inst_type == "future") {
         std::cout << "\n[MISSED ALPHA] Instrument " << symbol << " is a Future. Logging theoretical execution." << std::endl;
         json shadow_sig = packet.to_json();
@@ -103,7 +100,9 @@ void ExecutionEngine::handle_thalamus_signal(const json& signal) {
         return; 
     }
 
-    ApprovalStatus status = risk_manager.approve_trade(packet);
+    // THE FIX: Pass sector into Risk Manager
+    std::string sector = get_sector(symbol);
+    ApprovalStatus status = risk_manager.approve_trade(packet, sector);
 
     if (!status.approved) {
         std::cout << "[RISK REJECT] " << symbol << " denied. Reason: " << status.reason << std::endl;
@@ -116,12 +115,10 @@ void ExecutionEngine::handle_thalamus_signal(const json& signal) {
 
     place_order(symbol, packet.side, approved_qty, packet.market_price, packet.catastrophe_stop, packet.target_price);
     
-    risk_manager.record_execution(get_sector(symbol), approved_qty * packet.market_price);
+    // THE FIX: Record exact sector allocation
+    risk_manager.record_execution(sector, approved_qty * packet.market_price);
 }
 
-// --------------------------------------------------------------------------
-// EXECUTION HELPERS
-// --------------------------------------------------------------------------
 std::vector<Order> ExecutionEngine::bracket_order(int parentId, const std::string& action, double qty, double limit_price, double stop_price, double take_profit) {
     std::vector<Order> bracket;
     
@@ -140,6 +137,7 @@ std::vector<Order> ExecutionEngine::bracket_order(int parentId, const std::strin
     stop.orderType = "STP";
     stop.auxPrice = stop_price; 
     stop.totalQuantity = Decimal(qty);
+    stop.tif = "GTC"; // THE FIX: Ensure stops persist across days
     stop.transmit = false;
 
     Order profit;
@@ -149,6 +147,7 @@ std::vector<Order> ExecutionEngine::bracket_order(int parentId, const std::strin
     profit.orderType = "LMT";
     profit.lmtPrice = take_profit;
     profit.totalQuantity = Decimal(qty);
+    profit.tif = "GTC"; // THE FIX: Ensure targets persist across days
     profit.transmit = true; 
 
     bracket.push_back(parent);

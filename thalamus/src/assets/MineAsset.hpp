@@ -1,3 +1,4 @@
+// VVV FILE: ./thalamus/src/assets/MineAsset.hpp VVV
 #ifndef MINE_ASSET_HPP
 #define MINE_ASSET_HPP
 
@@ -17,10 +18,11 @@ struct MineState {
     float beta;              // Relative volatility
     float commodity_price;   // Spot prices 
 
-    float op_health;         
-    float threat_level;      
+    float op_health;         // 0.0 to 1.0
+    float threat_level;      // 0.0 to 1.0
     
-    float cost_per_unit;    // $ per tonne mined 
+    float cost_per_unit;     // $ per tonne mined (COGS)
+    float fixed_costs;       // NEW: Annual Capex & Overhead ($)
 
     float cost_of_debt;      // Rd
     float cost_of_equity;    // Re
@@ -47,3 +49,4 @@ protected:
 };
 
 #endif
+// ^^^ END FILE: ./thalamus/src/assets/MineAsset.hpp ^^^

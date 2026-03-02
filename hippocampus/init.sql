@@ -352,6 +352,46 @@ DROP TRIGGER IF EXISTS trg_maritime_geom ON maritime_voyage_logs;
 CREATE TRIGGER trg_maritime_geom BEFORE INSERT OR UPDATE ON maritime_voyage_logs
 FOR EACH ROW EXECUTE FUNCTION auto_geom_log();
 
+-- Phase 1: The Universe Generator
+CREATE TABLE IF NOT EXISTS edgar_universe (
+    cik VARCHAR(10) PRIMARY KEY,
+    ticker VARCHAR(10),
+    company_name TEXT,
+    sic_code VARCHAR(4),
+    is_active BOOLEAN DEFAULT TRUE,
+    last_audited TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Phase 2: Expand Financials and Operational Mass-Balance for Engine A (The Accountant)
+ALTER TABLE quarterly_financials 
+ADD COLUMN IF NOT EXISTS revenue_usd NUMERIC,
+ADD COLUMN IF NOT EXISTS cogs_usd NUMERIC,
+ADD COLUMN IF NOT EXISTS capex_usd NUMERIC,
+ADD COLUMN IF NOT EXISTS debt_usd NUMERIC,
+ADD COLUMN IF NOT EXISTS ebitda NUMERIC,
+
+-- New Phase 3: Thalamus-Aligned Physical Operations
+ADD COLUMN IF NOT EXISTS capacity_tonnes NUMERIC,
+ADD COLUMN IF NOT EXISTS throughput_tonnes NUMERIC,
+ADD COLUMN IF NOT EXISTS head_grade_pct NUMERIC,
+ADD COLUMN IF NOT EXISTS recovery_rate_pct NUMERIC,
+ADD COLUMN IF NOT EXISTS cash_cost_per_unit_usd NUMERIC;
+
+-- Phase 3: The Split Graph Architecture
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS is_private BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS corporate_financials (
+                ticker VARCHAR(10) NOT NULL,
+                period VARCHAR(50) NOT NULL,
+                revenue_usd NUMERIC,
+                ebitda_usd NUMERIC,
+                capex_usd NUMERIC,
+                debt_usd NUMERIC,
+                source_doc TEXT,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(ticker, period)
+            );
+            
 -- [LAYER 8] REFERENCE DATA
 -- --------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS spatial_ref.world_cities (

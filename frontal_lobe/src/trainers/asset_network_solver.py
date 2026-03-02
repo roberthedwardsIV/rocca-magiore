@@ -3,7 +3,6 @@ import pandas as pd
 import psycopg2 
 from psycopg2.extras import execute_batch
 import time
-import os
 import redis
 import json
 import threading
@@ -17,6 +16,9 @@ DB_CONFIG = {
     "host": "hippocampus",
     "port": "5432"
 }
+
+# Redis connection for pushing ground-truth filings to the C++ Core
+r_bus = redis.Redis(host='corpus_callosum', port=6379, db=0)
 
 def get_raw_connection():
     try:
@@ -51,7 +53,6 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return R * c
 
 def get_region(lat, lon):
-    """Maps coordinates to our specific lane zones"""
     if lat > 15 and lon < -45: 
         return 'North America West' if lon < -100 else 'North America East'
     if lat <= 15 and lon < -30: 
@@ -61,7 +62,6 @@ def get_region(lat, lon):
     if lat > -10 and lon > 45: return 'Asia'
     return 'Global_Default'
 
-# --- FETCH RATES USING EXACT SCHEMA ---
 def fetch_live_logistics_rates(conn):
     rates = {}
     df = fetch_as_dataframe(conn, "SELECT origin_zone, dest_zone, transport_mode, rate_usd FROM freight_rates")
@@ -70,6 +70,36 @@ def fetch_live_logistics_rates(conn):
             rates[(row['origin_zone'], row['dest_zone'], row['transport_mode'])] = float(row['rate_usd'])
     return rates
 
+def broadcast_sec_filings_to_thalamus(df_merged):
+    """
+    Acts as the telemetry bridge. Pushes SEC ground-truth parameters to 
+    the C++ Core so Assets can update their NPV and EV calculations.
+    """
+    print(f"   -> [TELEMETRY] Broadcasting {len(df_merged)} updated SEC models to Thalamus Core...", flush=True)
+    for _, row in df_merged.iterrows():
+        cogs = row.get('cogs_usd')
+        capex = row.get('capex_usd')
+        prod = row.get('reported_production_tonnes')
+        
+        unit_cost = None
+        if pd.notnull(cogs) and pd.notnull(prod) and prod > 0:
+            unit_cost = float(cogs) / float(prod)
+            unit_cost = max(500.0, min(unit_cost, 25000.0))
+
+        signal = {
+            "entity_type": row['type'],
+            "asset_id": row['id'],
+            "category": "filing",
+            "timestamp": int(time.time() * 1000)
+        }
+        
+        if pd.notnull(prod): signal["production_rate"] = float(prod)
+        if pd.notnull(prod): signal["throughput"] = float(prod) 
+        if unit_cost: signal["cost_per_unit"] = unit_cost
+        if pd.notnull(capex): signal["fixed_costs"] = float(capex)
+
+        r_bus.lpush("raw_signals", json.dumps(signal))
+
 def solve_network(use_live_signals=True):
     print("\n[NET SOLVER] Waking up. Assessing data completeness...", flush=True)
     
@@ -77,64 +107,77 @@ def solve_network(use_live_signals=True):
     if not conn: return
 
     try:
-        # 1. FETCH ASSETS (Including Ports)
+        # 1. FETCH ASSETS
         query_assets = """
             SELECT id, name, type, 
                    ST_Y(ST_Centroid(geom)) as latitude, 
                    ST_X(ST_Centroid(geom)) as longitude
             FROM assets 
-            WHERE geom IS NOT NULL
+            WHERE geom IS NOT NULL AND is_private = FALSE
         """
         df_assets = fetch_as_dataframe(conn, query_assets)
         
         if df_assets.empty:
-            print("[NET SOLVER] No assets found with valid geometry. Skipping cycle.", flush=True)
+            print("[NET SOLVER] No public assets found. Skipping cycle.", flush=True)
             return
 
-        # Map coords for post-processing router
         coords_map = {row['id']: (row['latitude'], row['longitude']) for _, row in df_assets.iterrows()}
-        
-        # Isolate Ports
         ports_df = df_assets[df_assets['type'] == 'port'].copy()
         ports_tuples = list(zip(ports_df['id'], ports_df['latitude'], ports_df['longitude']))
 
         mines = df_assets[df_assets['type'] == 'mine'].copy()
         refineries = df_assets[df_assets['type'].isin(['refinery', 'smelter'])].copy()
 
-        # 2. THE DATA COMPLETENESS GATE
-        query_fin = "SELECT asset_id, reported_production_tonnes, reported_freight_expense_usd FROM quarterly_financials WHERE quarter = '2025-CURRENT'"
+        # 2. FETCH MACRO FINANCIALS & PHYSICAL CONSTRAINTS (The New Schema)
+        query_fin = """
+            SELECT asset_id, reported_production_tonnes, cash_cost_per_unit_usd, cogs_usd, capex_usd
+            FROM quarterly_financials 
+            WHERE quarter = '2025-CURRENT'
+        """
         df_fin = fetch_as_dataframe(conn, query_fin)
         
         total_mines = len(mines)
-        
         if df_fin.empty:
-            print("[NET SOLVER] ABORT: 0% financial data parsed. Waiting for NLP parser.", flush=True)
+            print("[NET SOLVER] ABORT: 0% financial data parsed. Waiting for Auditor.", flush=True)
             return
             
-        # INNER JOIN: We drop any mine that hasn't been successfully parsed yet
         mines = mines.merge(df_fin, left_on='id', right_on='asset_id', how='inner')
-        
         coverage = len(mines) / total_mines if total_mines > 0 else 0
         
-        if coverage < 0.20: # Must have at least 20% of the world's mine capacities parsed to build a reliable matrix
-            print(f"[NET SOLVER] ABORT: Only {coverage:.1%} of mines have real financial data. Waiting for NLP.", flush=True)
+        if coverage < 0.20:
+            print(f"[NET SOLVER] ABORT: Only {coverage:.1%} of mines have SEC data. Waiting for NLP.", flush=True)
             return
 
-        print(f"   -> GATE PASSED: Proceeding with {len(mines)} fully verified Mines and {len(refineries)} Refineries.", flush=True)
+        print(f"   -> GATE PASSED: Proceeding with {len(mines)} fully verified Mines.", flush=True)
 
+        broadcast_sec_filings_to_thalamus(mines)
+
+        # 4. BUILD COST MATRIX & CALCULATE IMPLIED MARGINS
         live_rates = fetch_live_logistics_rates(conn)
-
-        # 3. BUILD COST MATRIX (OPTIMIZED)
         routes = []
         costs = {}
+        mines_margin_map = {}
         MAX_DIST_KM = 8000.0 
         
-        print(f"   -> Calculating spatial distances (Fast Mode)...", flush=True)
+        print(f"   -> Calculating spatial distances and unit economics...", flush=True)
         
+        # Calculate implied margin per mine for the LP Objective
+        for _, m_row in mines.iterrows():
+            m_id = m_row['id']
+            cogs = m_row.get('cogs_usd')
+            prod = m_row.get('reported_production_tonnes')
+            
+            margin_per_tonne = 5000.0 # Safe default global price assumption
+            if pd.notnull(cogs) and pd.notnull(prod) and prod > 0:
+                cost_per_tonne = float(cogs) / float(prod)
+                margin_per_tonne = max(100.0, margin_per_tonne - cost_per_tonne) # Prevent negative margins
+                
+            mines_margin_map[m_id] = margin_per_tonne
+
+        # Spatial Routing
         mines_tuples = list(zip(mines['id'], mines['latitude'], mines['longitude']))
         refs_tuples = list(zip(refineries['id'], refineries['latitude'], refineries['longitude']))
         
-        count = 0
         for m_id, m_lat, m_lon in mines_tuples:
             m_region = get_region(m_lat, m_lon)
             distances = []
@@ -152,7 +195,6 @@ def solve_network(use_live_signals=True):
                 if dist < 100: mode = "truck"
                 
                 r_region = get_region(r_lat, r_lon)
-                
                 if mode == 'maritime':
                     feu_rate = live_rates.get((m_region, r_region, 'maritime'), live_rates.get(('Global_Default', 'Global_Default', 'maritime'), 1946.00))
                     unit_cost = feu_rate / 22.0
@@ -165,34 +207,27 @@ def solve_network(use_live_signals=True):
                 costs[(m_id, r_id)] = unit_cost
                 routes.append((m_id, r_id))
             
-            count += 1
-            if count % 2000 == 0:
-                print(f"      ... mapped potential routes for {count}/{len(mines)} mines", flush=True)
-
         if not routes:
-            print("[NET SOLVER] No viable routes found.", flush=True)
             return
 
         print(f"   -> Graph Pruned. Solving LP Matrix for {len(routes)} viable edges...", flush=True)
 
-        # 4. OPTIMIZATION
+        # 5. OPTIMIZATION (Margin-Weighted Objective)
+        # 5. OPTIMIZATION (Margin-Weighted Objective)
         prob = pulp.LpProblem("Supply_Chain_Retraining", pulp.LpMaximize)
         flow_vars = pulp.LpVariable.dicts("Flow", routes, lowBound=0, cat='Continuous')
         
-        prob += pulp.lpSum([flow_vars[r] * (1000.0 - costs[r]) for r in routes])
+        # NEW OBJECTIVE: Maximize Volume * (SEC Implied Margin - Global Freight Cost)
+        prob += pulp.lpSum([flow_vars[r] * (mines_margin_map[r[0]] - costs[r]) for r in routes])
 
-        mines_constraint_tuples = list(zip(mines['id'], mines['reported_production_tonnes'], mines['reported_freight_expense_usd']))
+        # THE FIX: Removed the dead freight_expense constraint. Constrain strictly by production volume.
+        mines_constraint_tuples = list(zip(mines['id'], mines['reported_production_tonnes']))
         
-        for mid, prod_tonnes, freight_exp in mines_constraint_tuples:
+        for mid, prod_tonnes in mines_constraint_tuples:
             valid_routes = [r for r in routes if r[0] == mid]
             
-            if valid_routes:
+            if valid_routes and pd.notnull(prod_tonnes) and prod_tonnes > 0:
                 prob += pulp.lpSum([flow_vars[r] for r in valid_routes]) <= prod_tonnes
-                
-                if freight_exp > 0:
-                    calc_cost = pulp.lpSum([flow_vars[r] * costs[r] for r in valid_routes])
-                    prob += calc_cost >= freight_exp * 0.90
-                    prob += calc_cost <= freight_exp * 1.10
 
         prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=60))
         
@@ -203,7 +238,7 @@ def solve_network(use_live_signals=True):
             
             insert_batch = []
             
-            # 5. POST-PROCESSING ROUTER (Splitting Sea Lanes into Ports)
+            # Post-Processing Splitter
             for r in routes:
                 vol = flow_vars[r].varValue
                 if vol and vol > 500:
@@ -212,19 +247,13 @@ def solve_network(use_live_signals=True):
                     r_lat, r_lon = coords_map[r_id]
                     total_dist = haversine_km(m_lat, m_lon, r_lat, r_lon)
 
-                    # If it's a long haul (Maritime), route it through ports
                     if total_dist > 800 and ports_tuples:
-                        # Find closest port to the Mine
                         origin_port = min(ports_tuples, key=lambda p: haversine_km(m_lat, m_lon, p[1], p[2]))
-                        # Find closest port to the Refinery
                         dest_port = min(ports_tuples, key=lambda p: haversine_km(r_lat, r_lon, p[1], p[2]))
-
-                        # Create the 3-Leg Journey
-                        insert_batch.append((m_id, origin_port[0], vol, costs[r]*0.15, 0.90, target_quarter))      # Leg 1: Mine -> Origin Port
-                        insert_batch.append((origin_port[0], dest_port[0], vol, costs[r]*0.70, 0.90, target_quarter)) # Leg 2: Ocean Freight
-                        insert_batch.append((dest_port[0], r_id, vol, costs[r]*0.15, 0.90, target_quarter))        # Leg 3: Dest Port -> Refinery
+                        insert_batch.append((m_id, origin_port[0], vol, costs[r]*0.15, 0.90, target_quarter))
+                        insert_batch.append((origin_port[0], dest_port[0], vol, costs[r]*0.70, 0.90, target_quarter))
+                        insert_batch.append((dest_port[0], r_id, vol, costs[r]*0.15, 0.90, target_quarter))
                     else:
-                        # Direct overland route
                         insert_batch.append((m_id, r_id, vol, costs[r], 0.95, target_quarter))
             
             if insert_batch:
@@ -235,9 +264,7 @@ def solve_network(use_live_signals=True):
                 """
                 execute_batch(cur, insert_query, insert_batch)
                 conn.commit()
-                print(f"[NET SOLVER] Solved. {len(insert_batch)} complex route segments mapped.", flush=True)
-            else:
-                print("[NET SOLVER] Solved, but no significant flows found.", flush=True)
+                print(f"[NET SOLVER] Solved. {len(insert_batch)} complex route segments mapped based on SEC financials.", flush=True)
             cur.close()
         else:
             print(f"[NET SOLVER] Optimization Failed. Status: {pulp.LpStatus[prob.status]}", flush=True)
@@ -250,14 +277,13 @@ def solve_network(use_live_signals=True):
 
 def run_scheduler():
     while True:
-        time.sleep(3600) # THE FIX: Changed from 6 hours to 1 hour
+        time.sleep(3600) 
         print("[NET SOLVER] Running scheduled 1-hour baseline solve...", flush=True)
         solve_network(use_live_signals=False)
 
 def listen_for_triggers():
     print("[NET SOLVER] Listening for dynamic Redis triggers...", flush=True)
-    r = redis.Redis(host='corpus_callosum', port=6379, db=0)
-    pubsub = r.pubsub()
+    pubsub = r_bus.pubsub()
     pubsub.subscribe('raw_signals')
     
     last_solve_time = 0
@@ -273,7 +299,7 @@ def listen_for_triggers():
                 e_type = data.get('entity_type', '')
                 
                 trigger = False
-                if e_type in ['earthquake', 'wildfire']:
+                if e_type in ['earthquake', 'wildfire', 'financial_filing']:
                     trigger = True
                 elif category in ['threat', 'integrity', 'seismic'] and severity >= 0.5:
                     trigger = True
@@ -296,7 +322,7 @@ def run_growth_monitor():
         if conn:
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT count(*) FROM assets WHERE geom IS NOT NULL")
+                cur.execute("SELECT count(*) FROM assets WHERE geom IS NOT NULL AND is_private = FALSE")
                 count = cur.fetchone()[0]
                 
                 if last_count == 0:

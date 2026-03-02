@@ -1,3 +1,4 @@
+// VVV FILE: ./thalamus/src/assets/RefineryAsset.cpp VVV
 #include "RefineryAsset.hpp"
 #include <algorithm>
 #include <cmath>
@@ -9,19 +10,19 @@ RefineryAsset::RefineryAsset(int id, std::string name)
     
     this->process_noise = 0.002f;
     current_state = {
-        // Physical Defaults (Copper Smelter scale)
+        // Physical Defaults 
         3000.0f,        // Nameplate Capacity (Tonnes/day)
         2800.0f,        // Initial Throughput
         0.5f,           // Ore Inventory
         1.0f,           // Op Health
-        0.0f,           // Containment Risk (Tailings)
+        0.0f,           // Containment Risk 
 
         // Financial Defaults
-        9000.0f,        // Metal Spot Price ($/tonne - e.g. Copper)
-        6000.0f,        // Ore Cost Basis ($/tonne of metal content)
-        800.0f,         // Processing Cost ($/tonne) - High energy cost
-        40000000.0f,    // Fixed Costs ($40M/yr)
-        7.0f,           // Base Multiple (Smelters trade higher than oil refineries)
+        9000.0f,        // Metal Spot Price ($/tonne)
+        6000.0f,        // Ore Cost Basis ($/tonne)
+        800.0f,         // Processing Cost ($/tonne)
+        40000000.0f,    // Fixed Costs ($40M/yr safe default)
+        7.0f,           // Base Multiple (EV/EBITDA)
 
         // Metallurgy
         0.96f,          // Recovery Rate (96%)
@@ -46,7 +47,6 @@ void RefineryAsset::process_packet(const json& sig) {
     recalculate_valuation(); 
 }
 
-
 // Math to update refinery state with updated data
 void RefineryAsset::apply_signal(const json& sig) {
     current_state.unc_thru += process_noise;
@@ -59,13 +59,13 @@ void RefineryAsset::apply_signal(const json& sig) {
     std::string category = sig.value("category", "none");
     float severity = sig.value("severity", 0.0f);
 
-    // Strict updates (market + filings data)
+    // --- 1. SEC FILINGS (Ground Truth) ---
     if (category == "filing") {
         if (sig.contains("fixed_costs")) 
             current_state.fixed_costs = sig["fixed_costs"].get<float>();
         
-        if (sig.contains("processing_cost")) 
-            current_state.processing_cost = sig["processing_cost"].get<float>();
+        if (sig.contains("cost_per_unit")) 
+            current_state.processing_cost = sig["cost_per_unit"].get<float>();
         
         if (sig.contains("base_multiple")) 
             current_state.base_multiple = sig["base_multiple"].get<float>();
@@ -81,17 +81,16 @@ void RefineryAsset::apply_signal(const json& sig) {
             current_state.unc_thru = process_noise; 
         }
     }
-    // Spot price + ore price updates
+    // --- 2. SPOT MARKETS ---
     else if (category == "market") {
-        if (sig.contains("price")) { // Metal Spot
+        if (sig.contains("price")) { 
             current_state.metal_spot_price = sig["price"].get<float>();
         }
-        if (sig.contains("ore_cost")) { // Input Cost
+        if (sig.contains("ore_cost")) { 
             current_state.ore_cost_basis = sig["ore_cost"].get<float>();
         }
     }
-
-    // Frontal lobe/sensory receptor updates
+    // --- 3. SENSORY RECEPTORS ---
     else if (category == "throughput") {
         if (sig.contains("value")) {
             float z_thru = sig["value"].get<float>();
@@ -123,10 +122,8 @@ void RefineryAsset::apply_signal(const json& sig) {
     current_state.last_update = sig.value("timestamp", 0LL);
 }
 
-
-// Valuation Calculation (EV/EBIDA)
+// Valuation Calculation (EV/EBITDA)
 void RefineryAsset::recalculate_valuation() {
-    // Utilization
     current_state.utilization_rate = current_state.throughput_rate / std::max(1.0f, current_state.nameplate_capacity);
     
     // Recovery & Cost adjustment (from op_health)
@@ -140,20 +137,19 @@ void RefineryAsset::recalculate_valuation() {
 
     // Annualized EBITDA
     float annual_tonnes = current_state.throughput_rate * 365.0f;
-    
-    // Gross Profit = Tonnes * (Smelting Margin - Processing Cost)
     float gross_profit_per_tonne = current_state.smelting_margin - current_state.effective_cost;
     current_state.gross_profit = annual_tonnes * gross_profit_per_tonne;
     
+    // EBITDA perfectly aligned with SEC data
     current_state.ebitda = current_state.gross_profit - current_state.fixed_costs;
 
     // EV Calculation
-    float risk_penalty = current_state.containment_risk * 5.0f; // Very harsh penalty
+    float risk_penalty = current_state.containment_risk * 5.0f; 
     current_state.adjusted_multiple = std::max(1.0f, current_state.base_multiple - risk_penalty);
 
-    current_state.enterprise_value = current_state.ebitda * current_state.adjusted_multiple;
+    // NEW: Floor at 0. Negative enterprise values break SOTP rollups
+    current_state.enterprise_value = std::max(0.0f, current_state.ebitda * current_state.adjusted_multiple);
 }
-
 
 // JSON Packager
 json RefineryAsset::get_json_state() const {
@@ -172,6 +168,8 @@ json RefineryAsset::get_json_state() const {
         {"recovery_rate", current_state.recovery_rate},
         {"op_health", current_state.op_health},
         {"containment_risk", current_state.containment_risk},
+        {"fixed_costs", current_state.fixed_costs},
         {"last_update", current_state.last_update}
     };
 }
+// ^^^ END FILE: ./thalamus/src/assets/RefineryAsset.cpp ^^^

@@ -107,63 +107,104 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
 }
 
 // --- HELPER: EXECUTE OVERPASS QUERY ---
+// --- HELPER: EXECUTE OVERPASS QUERY ---
+// --- HELPER: EXECUTE OVERPASS QUERY ---
 std::string fetch_overpass_data(const std::string& query, const std::string& phase_name) {
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        std::cerr << "[OSM INGEST][" << phase_name << "] Failed to initialize cURL." << std::endl;
-        return "";
-    }
+    while (true) {
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            std::cerr << "   -> [" << phase_name << "] Failed to initialize cURL. Retrying in 10s..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+            continue;
+        }
 
-    std::string response_buffer;
-    FetchContext ctx = {&response_buffer, 0, phase_name, std::chrono::steady_clock::now()};
+        std::string response_buffer;
+        FetchContext ctx = {&response_buffer, 0, phase_name, std::chrono::steady_clock::now()};
 
-    char* encoded_query = curl_easy_escape(curl, query.c_str(), query.length());
-    std::string url = OVERPASS_URL + "?data=" + std::string(encoded_query);
+        char* encoded_query = curl_easy_escape(curl, query.c_str(), query.length());
+        std::string url = OVERPASS_URL + "?data=" + std::string(encoded_query);
 
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "RoccoMaggiore-AI-Nexus/1.0");
-    
-    // Hardened Network Settings
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);         
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);   
-    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);     
-    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 60L);
-    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 30L);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "RoccoMaggiore-AI-Nexus/1.0");
+        
+        // Hardened Network Settings
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);         
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);   
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);     
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 60L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 30L);
 
-    auto start = std::chrono::steady_clock::now();
-    CURLcode res = curl_easy_perform(curl);
-    auto end = std::chrono::steady_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - ctx.start_time).count();
-    
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        auto start = std::chrono::steady_clock::now();
+        CURLcode res = curl_easy_perform(curl);
+        auto end = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - ctx.start_time).count();
+        
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        
+        curl_free(encoded_query);
+        curl_easy_cleanup(curl);
 
-    if (res != CURLE_OK) {
-        std::cerr << "   -> [CURL ERROR] " << curl_easy_strerror(res) << " after " << duration << "s." << std::endl;
-    } else {
+        // 1. Transient Network Drops -> Sleep and Retry indefinitely
+        if (res == CURLE_COULDNT_RESOLVE_HOST || res == CURLE_COULDNT_CONNECT || res == CURLE_SEND_ERROR) {
+            std::cerr << "   -> [NETWORK ERROR] DNS/Connection failed. Retrying in 30s..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(30));
+            continue; 
+        }
+
+        // 2. cURL Level Timeout/OOM -> Subdivide!
+        // This triggers if libcurl hits the 600s wall, or our RAM limits out
+        if (res == CURLE_OPERATION_TIMEDOUT || res == CURLE_RECV_ERROR || res == CURLE_PARTIAL_FILE || res == CURLE_WRITE_ERROR) {
+            std::cerr << "   -> [TIMEOUT/OOM] Payload too large or dropped. Triggering subdivision." << std::endl;
+            return ""; // Empty string triggers subdivision
+        }
+
+        // 3. Unhandled cURL errors -> Sleep and Retry
+        if (res != CURLE_OK) {
+            std::cerr << "   -> [CURL ERROR] " << curl_easy_strerror(res) << " after " << duration << "s. Retrying in 30s..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(30));
+            continue;
+        }
+
+        // 4. Overpass Rate Limits (HTTP 429) -> Sleep and Retry
         if (http_code == 429) {
             std::cerr << "   -> [RATE LIMITED] Overpass rejected request (Too Many Requests). Waiting 60s..." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(60));
-            response_buffer = ""; 
-        } else if (http_code >= 500 && http_code <= 599) {
-            std::cerr << "   -> [HTTP " << http_code << "] Overpass API Server Error (Overloaded). Suppressing HTML dump." << std::endl;
-            response_buffer = ""; 
-        } else if (http_code != 200) {
+            continue;
+        } 
+        
+        // 5. Overpass Server Error (HTTP 500-599) -> SLEEP AND RETRY! (THE FIX)
+        // Never subdivide on a 5xx error. The server is just temporarily crippled.
+        if (http_code >= 500 && http_code <= 599) {
+            std::cerr << "   -> [SERVER ERROR] HTTP " << http_code << " (Overloaded). Sleeping 60s and retrying..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(60));
+            continue;
+        } 
+
+        // 6. Logical Overpass Limits (Data Too Big) -> Subdivide!
+        // Sometimes Overpass returns HTTP 200 or 400 but the payload contains a memory/timeout error
+        if (response_buffer.find("out of memory") != std::string::npos || response_buffer.find("Query timed out") != std::string::npos) {
+            std::cerr << "   -> [OVERPASS LIMIT] Query exceeded server memory/time. Triggering subdivision." << std::endl;
+            return ""; 
+        }
+
+        // 7. Other HTTP Errors
+        if (http_code != 200) {
             std::string snippet = response_buffer.length() > 50 ? response_buffer.substr(0, 50) + "..." : response_buffer;
             std::replace(snippet.begin(), snippet.end(), '\n', ' ');
-            std::cerr << "   -> [HTTP " << http_code << "] Failed. Response: " << snippet << std::endl;
-            response_buffer = "";
-        } else {
-            std::cout << "   -> [SUCCESS] Downloaded " << std::fixed << std::setprecision(2) 
-                      << (response_buffer.size() / 1024.0 / 1024.0) << " MB in " << duration << "s." << std::endl;
+            std::cerr << "   -> [HTTP " << http_code << "] Failed. Response: " << snippet << ". Retrying in 30s..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(30));
+            continue;
         }
+
+        // SUCCESS!
+        std::cout << "   -> [SUCCESS] Downloaded " << std::fixed << std::setprecision(2) 
+                  << (response_buffer.size() / 1024.0 / 1024.0) << " MB in " << duration << "s." << std::endl;
+        
+        return response_buffer;
     }
-    
-    curl_free(encoded_query);
-    curl_easy_cleanup(curl);
-    return response_buffer;
 }
 
 // --- HELPER: TAG PARSING ---
@@ -194,15 +235,16 @@ public:
             W.exec("ALTER TABLE assets ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;");
             W.commit();
         } catch (const std::exception& e) {
-            std::cerr << "[OSM INGEST] DB Schema warning: " << e.what() << std::endl;
+            std::cerr << "[osm_ingest.cpp] DB Schema warning: " << e.what() << std::endl;
         }
 
         reset_transaction();
         
+        // THE FIX: Use assets.metadata || EXCLUDED.metadata to merge JSON instead of overwriting it
         m_db.prepare("insert_asset", 
             "INSERT INTO assets (name, type, commodity_types, geom, source, last_update, op_health, metadata) "
             "VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326), 'OSM_INGEST', 1, 1.0, $6) "
-            "ON CONFLICT (name) DO UPDATE SET metadata = EXCLUDED.metadata, type = EXCLUDED.type");
+            "ON CONFLICT (name) DO UPDATE SET metadata = assets.metadata || EXCLUDED.metadata, type = EXCLUDED.type");
         
         m_db.prepare("insert_hub",   
             "INSERT INTO supply_hubs (osm_id, name, type, geom, capacity_rating, last_updated) "
@@ -560,17 +602,23 @@ void run_ingest_cycle() {
 int main() {
     std::cout << "[OSM INGEST] Service Online. Booting Overpass Ingestor." << std::endl;
     
+    // Initial wait to let other containers boot
     std::this_thread::sleep_for(std::chrono::seconds(20));
 
     while (true) {
         try {
             run_ingest_cycle();
+            
+            // If we successfully finish the global sweep without crashing, THEN we sleep for a week.
+            std::cout << "[OSM INGEST] Global Cycle Complete. Entering standby for 1 week (168 Hours)..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::hours(168));
+            
         } catch (const std::exception& e) {
-            std::cerr << "[OSM INGEST][FATAL] Ingest Cycle Crashed: " << e.what() << std::endl;
+            // If the DB isn't ready or it crashes, sleep for 30 seconds and retry!
+            std::cerr << "\n[OSM INGEST][FATAL] Ingest Cycle Crashed: " << e.what() << std::endl;
+            std::cerr << "[OSM INGEST] Retrying in 30 seconds..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(30));
         }
-        
-        std::cout << "[OSM INGEST] Cycle Complete. Entering standby for 1 week (168 Hours)..." << std::endl;
-        std::this_thread::sleep_for(std::chrono::hours(168));
     }
     return 0;
 }

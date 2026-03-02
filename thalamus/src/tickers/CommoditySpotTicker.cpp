@@ -1,3 +1,4 @@
+// VVV FILE: ./thalamus/src/tickers/CommoditySpotTicker.cpp VVV
 #include "CommoditySpotTicker.hpp"
 #include <cmath>
 #include <algorithm>
@@ -14,17 +15,15 @@ CommoditySpotTicker::CommoditySpotTicker(std::string sym, std::string name, std:
     };
 }
 
-
 // Updates from frontal_lobe/sensory_receptor signals
 void CommoditySpotTicker::update_supply_chain_health(float health_score) {
     std::lock_guard<std::mutex> lock(ticker_mutex);
     
-    // restrict health between 0.01 and 1.0 to prevent division by zero
+    // Restrict health between 0.01 and 1.0 to prevent division by zero
     current_state.flow_health = std::max(0.01f, std::min(1.0f, health_score));
     
     recalculate_fair_value();
 }
-
 
 // Handle Strict Market Data Updates 
 void CommoditySpotTicker::process_quote(const json& quote) {
@@ -45,7 +44,6 @@ void CommoditySpotTicker::process_quote(const json& quote) {
     recalculate_fair_value();
 }
 
-
 // Scarcity model for valuation calculation
 void CommoditySpotTicker::recalculate_fair_value() {
     if (current_state.market_price <= 0.0) return;
@@ -54,10 +52,13 @@ void CommoditySpotTicker::recalculate_fair_value() {
     // Factor = 1 / (Health^2)
     float scarcity_factor = 1.0f / (current_state.flow_health * current_state.flow_health);
     
+    // NEW: Hard cap the scarcity shock. Even if the supply chain completely collapses,
+    // spot prices rarely gap more than 300% instantaneously before demand destruction kicks in.
+    scarcity_factor = std::min(3.0f, scarcity_factor);
+    
     current_state.fair_value = current_state.market_price * scarcity_factor;
     current_state.scarcity_premium = current_state.fair_value - current_state.market_price;
 }
-
 
 // JSON packager
 json CommoditySpotTicker::get_json_state() const {
@@ -73,7 +74,7 @@ json CommoditySpotTicker::get_json_state() const {
         {"fair_value", current_state.fair_value},
         {"scarcity_premium", current_state.scarcity_premium},
         {"supply_chain_health", current_state.flow_health},
-        
         {"timestamp", current_state.timestamp}
     };
 }
+// ^^^ END FILE: ./thalamus/src/tickers/CommoditySpotTicker.cpp ^^^

@@ -1,3 +1,4 @@
+// VVV FILE: ./thalamus/src/assets/MineAsset.cpp VVV
 #include "MineAsset.hpp"
 #include <algorithm>
 #include <cmath>
@@ -25,7 +26,8 @@ MineAsset::MineAsset(int id, std::string name)
         1.0f,           // Operational health
         0.0f,           // Threat level
 
-        8500.0f,        // $ per tonne mined
+        8500.0f,        // $ per tonne mined (COGS)
+        10000000.0f,    // NEW: Fixed costs / Capex ($10M safe default)
 
         0.0f,           // Cost of debt
         0.0f,           // Cost equity
@@ -68,6 +70,10 @@ void MineAsset::apply_signal(const json& sig) {
         if (sig.contains("cost_per_unit")) {
             current_state.cost_per_unit = sig["cost_per_unit"].get<float>();
             current_state.unc_cost = process_noise; // hard set for direct cost filings
+        }
+        // NEW: Ingest Capex/Overhead from SEC Auditor
+        if (sig.contains("fixed_costs")) {
+            current_state.fixed_costs = sig["fixed_costs"].get<float>();
         }
         if (sig.contains("tax_rate")) {
             current_state.tax_rate = sig["tax_rate"].get<float>();
@@ -168,12 +174,17 @@ void MineAsset::recalculate_valuation() {
 
     float margin = current_state.commodity_price - current_state.cost_per_unit;
     float effective_production = annual_production * current_state.op_health;
-    float ebitda = margin * effective_production;
+    
+    // NEW: EBITDA now accurately subtracts SEC audited fixed costs (Capex/Overhead)
+    float ebitda = (margin * effective_production) - current_state.fixed_costs;
+    
     float free_cash_flow = ebitda * (1.0f - current_state.tax_rate);
 
+    // PV of Annuity Factor: [1 - (1+r)^-n] / r
     float discount_factor = (1.0f - std::pow(1.0f + current_state.wacc, -lom_years)) / current_state.wacc;
     
-    current_state.npv = free_cash_flow * discount_factor;
+    // NEW: Bounded at 0. A rationally managed asset with negative DCF holds an abandonment option value of $0.
+    current_state.npv = std::max(0.0f, free_cash_flow * discount_factor);
 }
 
 
@@ -190,6 +201,9 @@ json MineAsset::get_json_state() const {
         {"cost_of_debt", current_state.cost_of_debt},
         {"cost_of_equity", current_state.cost_of_equity},
         {"production_rate", current_state.production_rate},
+        {"cost_per_unit", current_state.cost_per_unit},
+        {"fixed_costs", current_state.fixed_costs}, // Included for dashboard visibility
         {"last_update", current_state.last_update}
     };
 }
+// ^^^ END FILE: ./thalamus/src/assets/MineAsset.cpp ^^^
