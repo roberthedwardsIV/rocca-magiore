@@ -1,4 +1,3 @@
-// VVV FILE: ./common/include/structs/StrategyPacket.hpp VVV
 #ifndef STRATEGY_PACKET_HPP
 #define STRATEGY_PACKET_HPP
 
@@ -11,7 +10,7 @@ using json = nlohmann::json;
 struct StrategyPacket {
     // --- 1. IDENTITY ---
     std::string strategy_id;    
-    std::string symbol;         
+    std::string symbol;
     long long timestamp;        
 
     // --- 2. STRATEGY INTENT ---
@@ -19,26 +18,21 @@ struct StrategyPacket {
     std::string action;         // "OPEN", "UPDATE", "CLOSE", "FLATTEN"
     std::string side;           // "BUY", "SELL"
     
-    // --- 3. THALAMUS INPUTS (The "Why") ---
+    // --- 3. MATRIX INPUTS (The "Why") ---
     double fair_value;          
     double market_price;        
     double confidence_score;    
     double volatility_forecast; 
-    double z_score;             // NEW: Required by Brainstem to confirm trade direction
+    
+    // NEW: Replaces z_score
+    double expected_return;     
+    int lag_minutes;            
 
     // --- 4. RISK CONSTRAINTS (The "Limits") ---
-    double suggested_risk;      
+    double suggested_risk;
     double catastrophe_stop;    
     double soft_stop;           
     double target_price;        
-
-    // --- HELPER: RATIO CHECK ---
-    double get_rr_ratio() const {
-        double risk = std::abs(market_price - soft_stop);
-        double reward = std::abs(target_price - market_price);
-        if (risk <= 0.0001) return 0.0; // Prevent div by zero
-        return reward / risk;
-    }
 
     // --- SERIALIZATION ---
     json to_json() const {
@@ -47,7 +41,7 @@ struct StrategyPacket {
             {"type", type}, {"act", action}, {"side", side},
             {"fv", fair_value}, {"mkt", market_price},
             {"conf", confidence_score}, {"vol", volatility_forecast},
-            {"z_score", z_score}, // NEW: Injected into JSON
+            {"expected_return", expected_return}, {"lag_minutes", lag_minutes},
             {"risk", suggested_risk}, {"hard", catastrophe_stop},
             {"soft", soft_stop}, {"tgt", target_price}
         };
@@ -57,7 +51,7 @@ struct StrategyPacket {
         StrategyPacket p;
         p.strategy_id = j.value("id", "");
         p.symbol = j.value("sym", "");
-        p.timestamp = j.value("ts", 0);
+        p.timestamp = j.value("ts", 0LL);
         p.type = j.value("type", "DELTA");
         p.action = j.value("act", "OPEN");
         p.side = j.value("side", "BUY");
@@ -65,7 +59,10 @@ struct StrategyPacket {
         p.market_price = j.value("mkt", 0.0);
         p.confidence_score = j.value("conf", 0.0);
         p.volatility_forecast = j.value("vol", 0.0);
-        p.z_score = j.value("z_score", 0.0); // NEW: Extracted from JSON
+        
+        p.expected_return = j.value("expected_return", 0.0);
+        p.lag_minutes = j.value("lag_minutes", 0);
+        
         p.suggested_risk = j.value("risk", 0.0);
         p.catastrophe_stop = j.value("hard", 0.0);
         p.soft_stop = j.value("soft", 0.0);
@@ -75,4 +72,3 @@ struct StrategyPacket {
 };
 
 #endif // STRATEGY_PACKET_HPP
-// ^^^ END FILE: ./common/include/structs/StrategyPacket.hpp ^^^

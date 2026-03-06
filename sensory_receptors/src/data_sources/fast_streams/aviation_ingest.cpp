@@ -7,12 +7,13 @@
 #include <chrono>
 #include <thread>
 #include <ctime>
+#include <cstdlib>
 
 using json = nlohmann::json;
 
 // Configuration Variables
-const std::string CLIENT_ID = "REMOVED";
-const std::string CLIENT_SECRET = "REMOVED";
+const std::string CLIENT_ID = std::getenv("OPENSKY_CLIENT_ID") ? std::getenv("OPENSKY_CLIENT_ID") : "CLIENT_ID";
+const std::string CLIENT_SECRET = std::getenv("OPENSKY_CLIENT_SECRET") ? std::getenv("OPENSKY_CLIENT_SECRET") : "CLIENT_SECRET";
 const std::string TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
 std::string access_token = "";
 auto token_expiry = std::chrono::steady_clock::now();
@@ -58,11 +59,11 @@ bool refresh_token() {
 
             // Refresh token every 25 minutes to maintain auth status
             token_expiry = std::chrono::steady_clock::now() + std::chrono::seconds(1500);
-            std::cout << "[AVIATION](AUTH) Success: Access Token Acquired." << std::endl;
+            std::cout << "[aviation_brain](AUTH) Success: Access Token Acquired." << std::endl;
             return true;
         } catch (...) { return false; }
     } else {
-        std::cerr << "[AVIATION](AUTH ERROR) HTTP: " << http_code << " | Response: " << readBuffer << std::endl;
+        std::cerr << "[aviation_brain](ERR) HTTP: " << http_code << " | Response: " << readBuffer << std::endl;
         return false;
     }
 }
@@ -72,7 +73,7 @@ bool refresh_token() {
 void sync_flights(redisContext* redis) {
     if (access_token == "" || std::chrono::steady_clock::now() >= token_expiry) {
         if (!refresh_token()) {
-            std::cerr << "[AVIATION](ERR) Cannot sync flights without valid token." << std::endl;
+            std::cerr << "[aviation_brain](ERR) Cannot sync flights without valid token." << std::endl;
             return;
         }
     }
@@ -136,13 +137,13 @@ void sync_flights(redisContext* redis) {
 
                         count++;
                     }
-                    std::cout << "[AVIATION](PULSE) Global Sync: " << count << " aircraft updated." << std::endl;
+                    std::cout << "[aviation_brain](PULSE) Global Sync: " << count << " aircraft updated." << std::endl;
                 }
             } catch (const json::parse_error& e) {
-                std::cerr << "[AVIATION](JSON ERR) Failed to parse: " << e.what() << std::endl;
+                std::cerr << "[aviation_brain](ERR) Failed to parse: " << e.what() << std::endl;
             }
         } else {
-            std::cerr << "[AVIATION](API WARN) Global Pulse Failed | HTTP: " << http_code << std::endl;
+            std::cerr << "[aviation_brain](ERR) Global Pulse Failed | HTTP: " << http_code << std::endl;
         }
     }
 
@@ -155,11 +156,11 @@ void sync_flights(redisContext* redis) {
 int main() {
     redisContext* redis = redisConnect("corpus_callosum", 6379);
     if (redis == NULL || redis->err) {
-        std::cerr << "[AVIATION](REDIS ERR) " << (redis ? redis->errstr : "Allocation error") << std::endl;
+        std::cerr << "[aviation_brain](ERR) " << (redis ? redis->errstr : "Allocation error") << std::endl;
         return 1;
     }
 
-    std::cout << "[AVIATION] Ingest Engine Online. Polling Global BBOXes...\n";
+    std::cout << "[aviation_brain] Ingest Engine Online. Polling Global BBOXes...\n";
 
     while (true) {
         sync_flights(redis);

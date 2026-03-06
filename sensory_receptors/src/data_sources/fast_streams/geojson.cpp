@@ -13,7 +13,7 @@
 
 using json = nlohmann::json;
 using namespace sw::redis;
-
+ 
 
 // Structure for calculated seismic signals to be sent to raw_signals
 struct SignalPacket {
@@ -72,7 +72,7 @@ int main() {
 
     auto redis = Redis("tcp://corpus_callosum:6379");
 
-    std::cout << "[GEOJSON] Earthquake Monitor Started. Connecting to Redis & Postgres..." << std::endl;
+    std::cout << "[geojson] Earthquake Monitor Started. Connecting to Redis & Postgres..." << std::endl;
 
     while (true) {
         std::string raw_data = fetchUSGSData(url);
@@ -108,7 +108,7 @@ int main() {
 
                             redis.lpush("raw_signals", signal.to_json_str());
 
-                            std::cout << "[GeoJSON] Earthquake Alert at: " << std::fixed << std::setprecision(2) << lat;
+                            std::cout << "[geojson] Earthquake Alert at: " << std::fixed << std::setprecision(2) << lat;
                             std::cout << ", " << std::fixed << std::setprecision(2) << lon;
                             std::cout << std::endl;
                         }
@@ -116,7 +116,7 @@ int main() {
                     }
                 }
             } catch (const std::exception& e) {
-                std::cerr << "[GEOJSON] JSON processing error: " << e.what() << std::endl;
+                std::cerr << "[geojson] (ERR) JSON processing error: " << e.what() << std::endl;
             }
         }
         

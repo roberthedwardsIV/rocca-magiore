@@ -1,244 +1,78 @@
-// VVV FILE: ./thalamus/src/Dispatcher.cpp VVV
-/**
-* Dispatcher.cpp: Central nervous system router.
-* Directs raw signals to specific handlers based on entity_type.
-* Ensures infrastructure and financial signals reach their targets.
-*/
 #include "Dispatcher.hpp"
-#include "GlobalRegistry.hpp"
+#include "SignalEngine.hpp"
 #include "DatabaseManager.hpp"
-#include "events/EarthquakeTracker.hpp"
-#include "events/WildfireTracker.hpp"
-#include "tickers/TickerRegistry.hpp"
-#include "Propagator.hpp"
-
 #include <iostream>
-#include <hiredis/hiredis.h>
+#include <cmath>
 #include <vector>
 #include <algorithm>
 
-// --- UTILITY HELPER TO PREVENT NULL CRASHES ---
-std::string safe_string(const json& j, const std::string& key, const std::string& default_val = "") {
-    if (j.contains(key) && j[key].is_string()) {
-        return j[key].get<std::string>();
-    }
-    return default_val;
-}
-
-// --- CONFIGURATION ---
-const std::vector<std::string> PERSISTENT_TYPES = {
-    "asset", "mine", "refinery", "smelter", "port", "power_plant", "factory",
-    "supply_line", "rail_route", "rail_mainline", "rail_spur",
-    "highway", "highway_trunk", "road", "pipeline", "pipeline_line",
-    "maritime_route", "shipping_lane", "air_route", "air",
-    "waterway", "inland_waterway", "power_line", "power_grid",
-    "environment", "earthquake", "wildfire", "weather",
-    "chokepoint", "hub", "bridge", "tunnel", "dam"
-};
-
-// --- MAIN ROUTER ---
-void Dispatcher::route_signal(const json& sig) {
-    std::string type = safe_string(sig, "entity_type", "unknown");
-
-    // 0. PERSISTENCE LAYER (The "Memory")
-    if (std::find(PERSISTENT_TYPES.begin(), PERSISTENT_TYPES.end(), type) != PERSISTENT_TYPES.end()) {
-        save_to_database(sig);
+double Dispatcher::calculate_local_mmi(double epicenter_mag, double epicenter_mmi, double distance_km) {
+    double I_0 = epicenter_mmi;
+    
+    // if we only have magnitude estimate Epicenter MMI
+    if (I_0 <= 0.0 && epicenter_mag > 0) {
+        I_0 = (1.5 * epicenter_mag) - 1.5; 
     }
     
-    // 1. DIRECT INFRASTRUCTURE ROUTING
-    if (sig.contains("asset_id")) {
-        handle_asset_signal(sig);
-        return;
-    } else if (sig.contains("line_id")) {
-        handle_route_signal(sig);
-        return;
-    } else if (sig.contains("hub_id")) {
-        handle_hub_signal(sig);
-        return;
-    } else if (sig.contains("cp_id")) {
-        handle_chokepoint_signal(sig);
-        return;
-    }
+    if (I_0 <= 0.0) return 0.0;
 
-    // 2. MACRO ECONOMIC DATA (FRED Updates)
-    if (type == "macro_economic") {
-        double rf = sig["data"].value("risk_free_rate", 0.045);
-        double spread = sig["data"].value("corporate_spread", 0.015);
-        long long ts = sig.value("timestamp", 0LL);
+    // Attenuation formula (I_local = I_0 - c * log10(Distance/10 + 1)
+    double local_mmi = I_0 - 2.7 * std::log10((distance_km / 10.0) + 1.0);
+    
+    // standardize to 1.0 - 12.0 scale
+    return std::max(1.0, std::min(12.0, local_mmi));
+}
+
+void Dispatcher::route_signal(const nlohmann::json& sig) {
+    std::string type = sig.value("entity_type", "unknown");
+
+    if (type == "earthquake" || type == "wildfire") {
+        if (!sig.contains("data")) return;
         
-        MacroData current = TickerRegistry::get_macro_data();
-        TickerRegistry::update_macro_data(rf, spread, current.equity_risk_premium, ts);
-
-        // A macro shift changes WACC for everything. Force a global recalculation.
-        GlobalRegistry::for_each_asset([&sig](std::shared_ptr<BaseAsset> asset) {
-            asset->process_packet(sig);
-        });
-        std::cout << "[DISPATCHER] FRED Rates Updated. Global WACC Repriced." << std::endl;
-    }
-    
-    // 3. DISASTER EVENTS (Earthquakes, Fires)
-    else if (type == "earthquake" || type == "wildfire" || type == "environment") {
-        handle_event_signal(sig);
-    }
-    
-    // 4. FINANCIAL INSTRUMENTS (Live IBKR quotes)
-    else if (type == "stock" || type == "future" || 
-             type == "option" || type == "commodity_spot" || type == "ticker_update") {
-        handle_ticker_signal(sig);
-    }
-    
-    // 5. CORPORATE EVENTS (The SEC Auditor Pulse)
-    else if (type == "financial_filing") {
-        std::cout << "[DISPATCHER] SEC Auditor Pulse Received for " << sig.value("symbol", "UNKNOWN") << ". Triggering Ticker Reprice." << std::endl;
-        handle_ticker_signal(sig);
-    }
-    
-    // 6. SILENT FALLBACK
-    else {
-        if (type != "Unknown" && type != "unknown" && type != "signal" && type != "keepalive" &&
-            type != "sand" && type != "aggregate" && type != "clay" && type != "kaolin" && type != "phosphate") {
-            // Unhandled types are safely ignored to prevent log spam
-        }
-    }
-}
-
-// --- HANDLERS ---
-
-void Dispatcher::handle_asset_signal(const json& sig) {
-    int id = sig.value("asset_id", -1);
-    if (id == -1) return;
-
-    auto asset = GlobalRegistry::get_asset(id);
-    if (asset) {
-        // [TELEMETRY BRIDGE] Verify SEC data is hitting the physical asset
-        if (sig.value("category", "") == "filing") {
-            std::cout << "[DISPATCHER] Injecting SEC Ground-Truth into Asset ID: " << id << std::endl;
-        }
-
-        // Pass flat or nested data safely
-        asset->process_packet(sig.contains("data") ? sig["data"] : sig);        
+        double lat = sig["data"].value("lat", 999.0);
+        double lon = sig["data"].value("lon", 999.0);
         
-        // This triggers the SignalEngine to evaluate if the NPV change warrants a trade
-        Propagator::propagate_asset_change(id); 
-    }
-}
+        if (lat == 999.0 || lon == 999.0) return;
 
-void Dispatcher::handle_event_signal(const json& sig) {
-    std::string id = safe_string(sig, "entity_id", "unknown");
-    if (id == "unknown") id = safe_string(sig, "id", "unknown");
+        // --- WILDFIRE ROUTING ---
+        if (type == "wildfire") {
+            double frp = sig["data"].value("frp", 0.0);
+            if (frp <= 0) return;
 
-    float lat = sig.contains("data") ? sig["data"].value("lat", 0.0f) : sig.value("lat", 0.0f);
-    float lon = sig.contains("data") ? sig["data"].value("lon", 0.0f) : sig.value("lon", 0.0f);
-    long long timestamp = sig.value("timestamp", 0LL);
-    std::string type = safe_string(sig, "entity_type", "");
-
-    std::shared_ptr<BaseEvent> target = GlobalRegistry::get_event(id);
-
-    if (!target) {
-        std::string proximal_id = GlobalRegistry::find_event_by_proximity(lat, lon, timestamp, type);
-        if (!proximal_id.empty()) {
-            target = GlobalRegistry::get_event(proximal_id);
-            id = proximal_id; 
-        }
-    }
-
-    if (!target) {
-        json archived = query_database_for_event(id, lat, lon, timestamp, type);
-        if (!archived.is_null()) {
-            if (type == "earthquake") target = std::make_shared<EarthquakeTracker>(archived);
-            else if (type == "wildfire" || type == "environment") target = std::make_shared<WildfireTracker>(archived);
+            // Strict 50km radius based on backtest assumptions
+            std::vector<AssetDistance> hit_assets = get_assets_near_location(lat, lon, 50.0);
             
-            if (target) GlobalRegistry::register_event(id, target);
-        }
-    }
-
-    if (!target) {
-        if (type == "earthquake") {
-            std::cout << "[DISPATCHER] Spawning Earthquake: " << id << std::endl;
-            target = std::make_shared<EarthquakeTracker>(sig);
-            trigger_twitter_recon(id, "earthquake", lat, lon, timestamp);
+            for (const auto& asset : hit_assets) {
+                std::cout << "[Dispatcher.cpp] WILDFIRE hit Asset " << asset.asset_id 
+                          << " | Dist: " << asset.distance_km << "km. Routing..." << std::endl;
+                          
+                // For fires intensity = raw FRP
+                SignalEngine::evaluate_physical_shock(asset.asset_id, "WILDFIRE", frp);
+            }
         } 
-        else if (type == "wildfire" || type == "environment") {
-            std::cout << "[DISPATCHER] Spawning Wildfire/Env Event: " << id << std::endl;
-            target = std::make_shared<WildfireTracker>(sig);
-            trigger_twitter_recon(id, "wildfire", lat, lon, timestamp);
+        
+        // --- EARTHQUAKE ROUTING ---
+        else if (type == "earthquake") {
+            double mag = sig["data"].value("mag", 0.0);
+            double mmi = sig["data"].value("mmi", 0.0); 
+            
+            if (mag <= 0 && mmi <= 0) return;
+
+            // pull everything within 300km then filter based on attenuation
+            std::vector<AssetDistance> hit_assets = get_assets_near_location(lat, lon, 300.0);
+            
+            for (const auto& asset : hit_assets) {
+                double local_mmi = calculate_local_mmi(mag, mmi, asset.distance_km);
+                
+                // Only trigger the matrix if the asset actually felt it (MMI >= 1.5)
+                if (local_mmi >= 1.5) {
+                    std::cout << "[Dispatcher.cpp] SEISMIC hit Asset " << asset.asset_id 
+                              << " | Dist: " << asset.distance_km 
+                              << "km | Local MMI: " << local_mmi << ". Routing..." << std::endl;
+                    
+                    SignalEngine::evaluate_physical_shock(asset.asset_id, "SEISMIC", local_mmi);
+                }
+            }
         }
-        if (target) GlobalRegistry::register_event(id, target);
-    }
-    
-    if (target) {
-        target->process_packet(sig);
-        Propagator::propagate_event_impact(id); 
     }
 }
-
-void Dispatcher::handle_route_signal(const json& sig) {
-    long long id = sig.value("line_id", -1LL);
-    std::string type = safe_string(sig, "entity_type", "");
-    if (id == -1) return;
-
-    auto route = GlobalRegistry::get_route(id, type);
-    if (route) {
-        route->process_packet(sig["data"]); 
-        Propagator::propagate_route_change(id); 
-    }
-}
-
-void Dispatcher::handle_hub_signal(const json& sig) {
-    long long id = sig.value("hub_id", -1LL);
-    if (id == -1) id = sig.value("asset_id", -1LL); 
-    std::string type = safe_string(sig, "entity_type", "");
-    if (id == -1) return;
-
-    auto hub = GlobalRegistry::get_hub(id, type);
-    if (hub) {
-        hub->process_packet(sig["data"]);
-        hub->update_status(); 
-        Propagator::propagate_hub_change(id);
-    }
-}
-
-void Dispatcher::handle_chokepoint_signal(const json& sig) {
-    int id = sig.value("cp_id", -1);
-    if (id == -1) id = sig.value("id", -1);
-    std::string type = safe_string(sig, "entity_type", "");
-    if (id == -1) return;
-
-    auto cp = GlobalRegistry::get_chokepoint(id, type);
-    if (cp) {
-        cp->process_packet(sig["data"]);
-        Propagator::propagate_chokepoint_change(id); 
-    }
-}
-
-void Dispatcher::handle_ticker_signal(const json& sig) {
-    std::string symbol = safe_string(sig, "symbol", "");
-    if (symbol.empty()) return;
-
-    auto ticker = TickerRegistry::get_ticker(symbol);
-    if (ticker) {
-        // Feed the data so the ticker can recalculate its Fair Value SOTP
-        ticker->process_quote(sig);
-    }
-}
-
-void Dispatcher::trigger_twitter_recon(const std::string& id, const std::string& type, float lat, float lon, long long ts) {
-    redisContext* c = redisConnect("corpus_callosum", 6379);
-    if (c && !c->err) {
-        json task;
-        task["task_id"] = id;       
-        task["type"] = type;
-        task["lat"] = lat;
-        task["lon"] = lon;
-        task["timestamp"] = ts;
-
-        std::string payload = task.dump();
-        redisCommand(c, "PUBLISH twitter_recon_tasks %s", payload.c_str());
-        redisFree(c);
-        std::cout << "[DISPATCHER] X/Twitter Recon dispatched: " << id << std::endl;
-    } else {
-        if(c) redisFree(c);
-        std::cerr << "[DISPATCHER] Redis connection failed for Recon trigger." << std::endl;
-    }
-}
-// ^^^ END FILE: ./thalamus/src/Dispatcher.cpp ^^^

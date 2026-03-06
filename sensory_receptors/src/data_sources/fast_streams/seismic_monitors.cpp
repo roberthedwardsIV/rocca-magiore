@@ -19,8 +19,16 @@
 #include <map>
 #include <algorithm>
 #include <libmseed.h> 
+#include <cstdlib>
 
 using namespace pqxx;
+
+// DB config to fetch stations
+const std::string DB_NAME = std::getenv("DB_NAME") ? std::getenv("DB_NAME") : "DB_NAME";
+const std::string DB_USER = std::getenv("DB_USER") ? std::getenv("DB_USER") : "DB_USER";
+const std::string DB_PASS = std::getenv("DB_PASS") ? std::getenv("DB_PASS") : "DB_PASS";
+const std::string conn_str = "dbname=" + DB_NAME + " user=" + DB_USER + " password=" + DB_PASS + " host=hippocampus port=5432";
+
 
 /**
  * @brief Streams earthquake station streams and publishes waveforms + metadata to socket + redis.
@@ -175,8 +183,8 @@ void process_samples(const std::string& key, int32_t* samples, int count) {
  * Calls: none
 */
 std::vector<TargetStation> fetch_stations_from_db() {
+    
     std::vector<TargetStation> targets;
-    std::string conn_str = "dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432";
     try {
         connection C(conn_str);
         work W(C);

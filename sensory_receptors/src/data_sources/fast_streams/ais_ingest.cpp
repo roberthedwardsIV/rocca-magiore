@@ -7,39 +7,38 @@
 #include <hiredis/hiredis.h>
 #include <nlohmann/json.hpp>
 #include <libwebsockets.h>
-#include <cstdlib> // For std::getenv
+#include <cstdlib>
 
 using json = nlohmann::json;
 
-// --- CONFIGURATION ---
-// 1. CRITICAL: Check for the Environment Variable
-const std::string AIS_API_KEY = std::getenv("AIS_API_KEY") ? std::getenv("AIS_API_KEY") : "REMOVED";
-
+// Redis config
 const char* REDIS_HOST = "corpus_callosum";
 const int REDIS_PORT = 6379;
+
+// AIS Stream config
+const std::string AIS_API_KEY = std::getenv("AIS_API_KEY") ? std::getenv("AIS_API_KEY") : "YOUR_API_KEY";
 const char* AIS_HOST = "stream.aisstream.io";
 const int AIS_PORT = 443;
 const char* AIS_PATH = "/v0/stream";
-
 struct AISContext {
     redisContext* redis;
     struct lws* wsi;
     bool subscription_sent;
 };
 
+// Main AIS streaming function to track vessels
 static int callback_ais(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
     AISContext* ctx = (AISContext*)lws_context_user(lws_get_context(wsi));
 
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
-            std::cout << "[MARITIME] Connection Established." << std::endl;
+            std::cout << "[ais_ingest] Connection Established." << std::endl;
             ctx->subscription_sent = false;
             lws_callback_on_writable(wsi);
             break;
 
         case LWS_CALLBACK_CLIENT_WRITEABLE:
             if (!ctx->subscription_sent) {
-                // 2. Debug: Print exactly what we are sending
                 json sub = {
                     {"APIKey", AIS_API_KEY},
                     {"BoundingBoxes", {{{-90, -180}, {90, 180}}}}, 
@@ -47,7 +46,7 @@ static int callback_ais(struct lws* wsi, enum lws_callback_reasons reason, void*
                 };
                 std::string msg = sub.dump();
                 
-                std::cout << "[MARITIME] Sending Subscription: " << msg << std::endl;
+                std::cout << "[ais_ingest] Sending Subscription: " << msg << std::endl;
 
                 unsigned char buf[LWS_PRE + 2048];
                 unsigned char* p = &buf[LWS_PRE];
@@ -55,7 +54,7 @@ static int callback_ais(struct lws* wsi, enum lws_callback_reasons reason, void*
                 memcpy(p, msg.c_str(), n);
                 
                 if (lws_write(wsi, p, n, LWS_WRITE_TEXT) < (ssize_t)n) {
-                    std::cerr << "[MARITIME] Write failed." << std::endl;
+                    std::cerr << "[ais_ingest] (ERR) Write failed." << std::endl;
                     return -1;
                 }
                 ctx->subscription_sent = true;
@@ -63,9 +62,7 @@ static int callback_ais(struct lws* wsi, enum lws_callback_reasons reason, void*
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            // 3. Debug: Print what the server says (It might be an error message!)
             std::string raw_msg((char*)in, len);
-            // std::cout << "[MARITIME] RX: " << raw_msg << std::endl;
 
             if (ctx->redis) {
                 redisReply* reply = (redisReply*)redisCommand(ctx->redis, "LPUSH maritime_ais %s", raw_msg.c_str());
@@ -77,11 +74,11 @@ static int callback_ais(struct lws* wsi, enum lws_callback_reasons reason, void*
         }
 
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-            std::cerr << "[MARITIME] Connect Error: " << (in ? (char*)in : "(null)") << std::endl;
+            std::cerr << "[ais_ingest] (ERR) Connect Error: " << (in ? (char*)in : "(null)") << std::endl;
             break;
 
         case LWS_CALLBACK_CLIENT_CLOSED:
-            std::cout << "[MARITIME] Connection Closed." << std::endl;
+            std::cout << "[ais_ingest] (ERR) Connection Closed." << std::endl;
             if (ctx) ctx->wsi = NULL;
             break;
 
@@ -95,17 +92,18 @@ static struct lws_protocols protocols[] = {
     { NULL, NULL, 0, 0 }
 };
 
+
+// ---------------------------------------------------------------------------------------------------------
 int main() {
     lws_set_log_level(LLL_ERR | LLL_WARN, NULL);
 
-    // 4. Safety Check: Don't run if key is missing
     if (AIS_API_KEY == "YOUR_API_KEY") {
-        std::cerr << "[MARITIME] CRITICAL: AIS_API_KEY is not set in Docker environment!" << std::endl;
-        std::cerr << "[MARITIME] Sleeping indefinitely..." << std::endl;
+        std::cerr << "[ais_ingest] (ERR) CRITICAL: AIS_API_KEY is not set in Docker environment!" << std::endl;
+        std::cerr << "[ais_ingest] Sleeping indefinitely..." << std::endl;
         while(true) std::this_thread::sleep_for(std::chrono::seconds(10));
     }
 
-    std::cout << "[MARITIME] Starting Ingest. Key: " << AIS_API_KEY.substr(0, 5) << "..." << std::endl;
+    std::cout << "[ais_ingest] Starting Ingest. " << std::endl;
 
     AISContext ais_ctx;
     ais_ctx.redis = redisConnect(REDIS_HOST, REDIS_PORT);
@@ -141,7 +139,7 @@ int main() {
             if (!ais_ctx.wsi) break;
         }
         
-        std::cout << "[MARITIME] Reconnecting in 5s..." << std::endl;
+        std::cout << "[ais_ingest] Reconnecting in 5s..." << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 

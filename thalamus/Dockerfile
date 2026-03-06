@@ -12,12 +12,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY ./common /app/common
-
 COPY ./thalamus /app/thalamus
 
 WORKDIR /app/thalamus
 RUN mkdir -p build && cd build && \
-    cmake .. && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc)
 
 FROM debian:bookworm-slim
@@ -25,7 +24,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
     libpqxx-dev \
     libpq5 \
-    libhiredis0.14 \
+    libhiredis-dev \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
