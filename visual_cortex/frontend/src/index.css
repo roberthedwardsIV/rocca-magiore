@@ -11,6 +11,8 @@ html, body, #root {
   color: #e0e0e0;
   overflow: hidden; 
   font-family: 'JetBrains Mono', Consolas, monospace;
+  /* Global Crosshair */
+  cursor: crosshair !important;
 }
 
 /* Force sharp edges globally to kill web-app feel */
@@ -20,28 +22,68 @@ html, body, #root {
 
 /* Blocky Terminal Scrollbars */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: #000000;
-  border-left: 1px solid #333333;
+  border-left: 1px solid #222222;
 }
 ::-webkit-scrollbar-thumb {
   background: #333333;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #ffbf00; 
+  background: #00f2ea; 
 }
 
-/* MapLibre Terminal Overrides */
-.maplibregl-popup-content {
-  background: #000000 !important;
-  color: #e0e0e0 !important;
-  border: 1px solid #333333 !important;
-  font-family: 'JetBrains Mono', Consolas, monospace !important;
-  padding: 4px !important;
+/* --- HOLOGRAPHIC BRUTALISM: OVERLAYS --- */
+
+/* Persistent CRT Scanlines & Vignette */
+.scanlines-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 9999;
+  /* Scanline gradient */
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,0),
+    rgba(255,255,255,0) 50%,
+    rgba(0,0,0,0.2) 50%,
+    rgba(0,0,0,0.2)
+  );
+  background-size: 100% 4px;
+  /* Vignette edges */
+  box-shadow: inset 0 0 100px rgba(0,0,0,0.95);
 }
-.maplibregl-popup-tip {
-  border-top-color: #333333 !important;
+
+/* Chromatic Aberration Text Effect */
+.holo-text {
+  text-shadow: 1px 0px 0px rgba(255, 0, 0, 0.6), -1px 0px 0px rgba(0, 255, 255, 0.6);
+}
+
+/* Hard memory-dump pulsing */
+@keyframes memPulse {
+  0% { opacity: 0.8; }
+  50% { opacity: 1; text-shadow: 0 0 8px currentColor; }
+  100% { opacity: 0.8; }
+}
+.animate-mem-pulse {
+  animation: memPulse 2s infinite;
+}
+
+/* Deck.gl Tooltip override */
+.deck-tooltip {
+  font-family: 'JetBrains Mono', monospace !important;
+  background: rgba(0, 0, 0, 0.9) !important;
+  border: 1px solid #00f2ea !important;
+  color: #00f2ea !important;
+  border-radius: 0 !important;
+  padding: 4px 8px !important;
+  font-size: 10px !important;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
 }

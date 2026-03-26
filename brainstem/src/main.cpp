@@ -3,16 +3,26 @@
 #include <thread>
 #include <iostream>
 #include <chrono>
+#include <cstdlib> // ADDED: For std::getenv
 
 int main() {
     ExecutionEngine engine;
     
-    std::cout << "[BRAINSTEM] Attempting connection to IBKR Gateway..." << std::endl;
+    // 1. DYNAMIC ENVIRONMENT VARIABLES
+    const char* ib_host_env = std::getenv("IB_HOST");
+    std::string ib_host = ib_host_env ? ib_host_env : "127.0.0.1";
+    
+    const char* ib_port_env = std::getenv("IB_PORT");
+    int ib_port = ib_port_env ? std::stoi(ib_port_env) : 4001;
 
-    // ADDED: Infinite Retry Loop
+    const char* redis_host_env = std::getenv("REDIS_HOST");
+    std::string redis_host = redis_host_env ? redis_host_env : "corpus_callosum";
+
+    std::cout << "[BRAINSTEM] Attempting connection to IBKR Gateway at " << ib_host << ":" << ib_port << "..." << std::endl;
+
+    // 2. CONNECT USING ENV VARS (Client ID: 2)
     while (true) {
-        // Connect to localhost (Sidecar Network) on Port 4002 (Paper)
-        if (engine.connect("127.0.0.1", 4002, 2)) {
+        if (engine.connect(ib_host.c_str(), ib_port, 2)) {
             std::cout << "[BRAINSTEM] Connection Established." << std::endl;
             break;
         }
@@ -20,13 +30,12 @@ int main() {
         std::this_thread::sleep_for(std::chrono::seconds(10));
     }
 
-    // Start IBKR message processing in a background thread
     std::thread ib_thread([&]() { engine.process_messages(); });
 
-    // Main thread listens to Thalamus Z-Score signals
-    redisContext* sub = redisConnect("corpus_callosum", 6379);
+    // 3. CONNECT REDIS USING ENV VAR
+    redisContext* sub = redisConnect(redis_host.c_str(), 6379);
     if (!sub || sub->err) {
-        std::cerr << "[BRAINSTEM] Critical: Cannot connect to Redis." << std::endl;
+        std::cerr << "[BRAINSTEM] Critical: Cannot connect to Redis at " << redis_host << std::endl;
         return 1;
     }
 

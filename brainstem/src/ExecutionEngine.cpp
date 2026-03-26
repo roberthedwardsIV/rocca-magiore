@@ -11,7 +11,10 @@ ExecutionEngine::ExecutionEngine()
       client(new EClientSocket(this, &m_osSignal)),
       nextOrderId(0) 
 {
-    redis_pub = redisConnect("corpus_callosum", 6379);
+    const char* redis_host_env = std::getenv("REDIS_HOST");
+    std::string redis_host = redis_host_env ? redis_host_env : "corpus_callosum";
+    
+    redis_pub = redisConnect(redis_host.c_str(), 6379);
     if (redis_pub == NULL || redis_pub->err) {
         std::cerr << "[BRAINSTEM] Redis publisher init failed: " << (redis_pub ? redis_pub->errstr : "Alloc") << std::endl;
     }
@@ -40,8 +43,56 @@ void ExecutionEngine::process_messages() {
 }
 
 // --------------------------------------------------------------------------
-// STRATEGY LOGIC: The Integration Point
+// TSDB Queries & Analysis (Blueprint 5)
 // --------------------------------------------------------------------------
+TSDBMetrics ExecutionEngine::fetch_quant_metrics(const std::string& symbol) {
+    TSDBMetrics metrics;
+    try {
+        pqxx::connection C(tsdb_conn_str);
+        pqxx::nontransaction N(C);
+        std::string query = "SELECT atr_14, vol_60_annualized, close FROM market_daily_metrics WHERE symbol = " + N.quote(symbol) + " ORDER BY day DESC LIMIT 1";
+        pqxx::result R = N.exec(query);
+        
+        if (!R.empty()) {
+            metrics.atr_14 = R[0]["atr_14"].as<double>();
+            metrics.vol_60_annualized = R[0]["vol_60_annualized"].as<double>();
+            metrics.last_close = R[0]["close"].as<double>();
+            metrics.is_valid = true;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[TSDB ERR] " << e.what() << std::endl;
+    }
+    return metrics;
+}
+
+double ExecutionEngine::fetch_portfolio_covariance(const std::string& new_symbol) {
+    return 0.15; // Baseline covariance factor
+}
+
+// NEW: Fetches the latest known live price directly from TimescaleDB
+double ExecutionEngine::fetch_latest_price(const std::string& symbol) {
+    try {
+        // Connect to the market_data_system TSDB
+        pqxx::connection C(tsdb_conn_str); 
+        pqxx::nontransaction N(C);
+        
+        // THE FIX: Query market_1m for the live streaming price, NOT historical_daily
+        std::string sql = "SELECT close FROM market_1m WHERE symbol = " + N.quote(symbol) + " ORDER BY time DESC LIMIT 1";
+        pqxx::result R = N.exec(sql);
+        
+        if (!R.empty()) {
+            return R[0][0].as<double>();
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[TSDB ERR] Failed to fetch latest price for " << symbol << ": " << e.what() << std::endl;
+    }
+    return 0.0;
+}
+
+// --------------------------------------------------------------------------
+// BLUEPRINT 1: Signal Coalescence (Probabilistic Union & Tranching)
+// --------------------------------------------------------------------------
+
 void ExecutionEngine::handle_thalamus_signal(const json& signal) {
     std::lock_guard<std::mutex> lock(engine_mtx);
     
@@ -55,68 +106,255 @@ void ExecutionEngine::handle_thalamus_signal(const json& signal) {
 
     std::string inst_type = signal.value("instrument_type", "STOCK"); 
 
-    if (market_cache.find(symbol) == market_cache.end()) {
-        std::cerr << "[BRAINSTEM] No market data for " << symbol << ". Ignoring signal." << std::endl;
+    signal_buffer[symbol].push_back(signal);
+    execute_coalesced_signals(symbol, signal_buffer[symbol], inst_type);
+    signal_buffer[symbol].clear();
+}
+
+void ExecutionEngine::execute_coalesced_signals(const std::string& symbol, const std::vector<json>& signals, const std::string& inst_type) {
+    if (signals.empty()) return;
+
+    double expected_remaining = 1.0;
+    double volume_weighted_lag = 0.0;
+    double total_weight = 0.0;
+    
+    double first_val = signals[0].value("expected_return", signals[0].value("z_score", 0.0));
+    std::string side = (first_val > 0) ? "BUY" : "SELL"; 
+    
+    // THE FIX: Call your new TSDB fetcher!
+    double execution_price = fetch_latest_price(symbol); 
+    
+    if (execution_price <= 0) {
+        std::cerr << "[BRAINSTEM] No TSDB market data for " << symbol << ". Ignoring signal." << std::endl;
+        return;
+    }
+
+    for (const auto& sig : signals) {
+        // Fallback to z_score scaling if expected_return missing
+        double e_r = sig.value("expected_return", sig.value("z_score", 0.0) * 0.01);
+        int lag = sig.value("lag_minutes", 0);
+        double conf = sig.value("conf", 1.0);
+        
+        expected_remaining *= (1.0 - std::abs(e_r)); 
+        volume_weighted_lag += (lag * conf);
+        total_weight += conf;
+    }
+
+    double net_expected_return = 1.0 - expected_remaining;
+    if (side == "SELL") net_expected_return = -net_expected_return;
+    
+    int vwal = (total_weight > 0) ? static_cast<int>(volume_weighted_lag / total_weight) : 0;
+
+    TSDBMetrics metrics = fetch_quant_metrics(symbol);
+    if (!metrics.is_valid || metrics.vol_60_annualized <= 0) {
+        std::cerr << "[QUANT EXEC] TSDB Metrics invalid or missing for " << symbol << std::endl;
+        return;
+    }
+
+    // --- PRESERVED: MISSED ALPHA CATCHER FOR FUTURES ---
+    if (inst_type == "FUTURE" || inst_type == "future") {
+        std::cout << "\n[MISSED ALPHA] Instrument " << symbol << " is a Future. Logging theoretical execution." << std::endl;
+        json shadow_sig;
+        shadow_sig["symbol"] = symbol;
+        shadow_sig["action"] = side;
+        shadow_sig["target_price"] = execution_price;
+        shadow_sig["expected_return"] = net_expected_return;
+        shadow_sig["reason"] = "NO_FUTURE_PERMISSIONS";
+        
+        TradeLogger::log_simulated_trade(shadow_sig, metrics.atr_14, 1.0, execution_price, execution_price);        return; 
+    }
+
+    // Continuous Fractional Kelly Criterion
+    double variance = std::pow(metrics.vol_60_annualized, 2);
+    double kelly_multiplier = 0.25; 
+    
+    double f_star = kelly_multiplier * (std::abs(net_expected_return) / variance);
+    double cov_penalty = fetch_portfolio_covariance(symbol);
+    f_star *= (1.0 - cov_penalty);
+
+    double target_capital = current_balance * std::min(f_star, 0.20); 
+    double total_qty = std::floor(target_capital / execution_price);
+    
+    if (total_qty <= 0) {
+        std::cout << "[QUANT EXEC] Kelly size too small for execution on " << symbol << std::endl;
+        return;
+    }
+
+    std::string sector = get_sector(symbol);
+    ApprovalStatus risk_status = risk_manager.validate_kelly_size(sector, total_qty, execution_price);
+    
+    if (!risk_status.approved) {
+        std::cout << "[RISK REJECT] " << symbol << " Kelly size denied. Reason: " << risk_status.reason << std::endl;
         return;
     }
     
-    MarketData mkt = market_cache[symbol];
-    if (mkt.last <= 0) mkt.last = (mkt.bid + mkt.ask) / 2.0; 
+    total_qty = risk_status.adjusted_size;
+    Contract contract = resolve_contract(symbol);
 
-    StrategyPacket packet;
-    packet.symbol = symbol;
-    packet.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
-    
-    float z_score = signal.value("z_score", 0.0f);
-    if (z_score > 2.0) { packet.action = "OPEN"; packet.side = "BUY"; }
-    else if (z_score < -2.0) { packet.action = "OPEN"; packet.side = "SELL"; }
-    else return; 
+    std::cout << "\n[QUANT EXEC] Coalesced " << signals.size() << " signals for " << symbol 
+              << " | Net Target: " << (net_expected_return * 100) << "%"
+              << " | Kelly f*: " << f_star << " | Final Qty: " << total_qty << std::endl;
 
-    packet.type = (inst_type == "OPTION") ? "OPTION" : "DELTA"; 
-    packet.market_price = (packet.side == "BUY") ? mkt.ask : mkt.bid;
-    packet.fair_value = signal.value("fair_value", packet.market_price); 
-    packet.volatility_forecast = signal.value("volatility", packet.market_price * 0.015);
-    
-    double atr = packet.volatility_forecast;
-    double stop_dist = atr * 2.0;
-    
-    if (packet.side == "BUY") {
-        packet.catastrophe_stop = packet.market_price - (stop_dist * 1.5); 
-        packet.soft_stop = packet.market_price - stop_dist;                
-        packet.target_price = packet.market_price + (stop_dist * 2.5);     
+    risk_manager.record_execution(sector, total_qty * execution_price);
+
+    // Tranching & Execution
+    Order parent;
+    parent.orderId = nextOrderId++;
+    parent.action = side;
+    parent.orderType = "MKT"; 
+    parent.totalQuantity = Decimal(total_qty);
+    parent.transmit = false;
+
+    // Protective Stop
+    double stop_dist = 1.5 * metrics.atr_14;
+    double hard_stop = (side == "BUY") ? execution_price - stop_dist : execution_price + stop_dist;
+
+    Order stop;
+    stop.orderId = nextOrderId++;
+    stop.parentId = parent.orderId;
+    stop.action = (side == "BUY") ? "SELL" : "BUY";
+    stop.orderType = "STP";
+    stop.auxPrice = hard_stop;
+    stop.totalQuantity = Decimal(total_qty);
+    stop.tif = "GTC";
+    stop.transmit = true; // Open right tail
+
+    if (paper_mode) {
+        std::cout << "[PAPER] EXECUTED " << side << " " << total_qty << " " << symbol << " @ MKT [Stop: " << hard_stop << "]" << std::endl;
+        active_positions[symbol] += (side == "BUY") ? total_qty : -total_qty;
     } else {
-        packet.catastrophe_stop = packet.market_price + (stop_dist * 1.5);
-        packet.soft_stop = packet.market_price + stop_dist;
-        packet.target_price = packet.market_price - (stop_dist * 2.5);
+        client->placeOrder(parent.orderId, contract, parent);
+        client->placeOrder(stop.orderId, contract, stop);
     }
+
+    // Register TATS State
+    TATSState state;
+    state.activated = false;
+    state.activation_target = execution_price * (1.0 + net_expected_return);
+    state.atr = metrics.atr_14;
+    state.original_stop_id = stop.orderId;
+    state.side = side;
+    state.entry_price = execution_price;
+    state.execution_time = std::chrono::system_clock::now().time_since_epoch().count();
+    state.lag_minutes = vwal;
+    state.current_qty = total_qty;
+    state.current_stop = hard_stop; 
+    state.take_profit = execution_price * (1.0 + net_expected_return);
+    active_tats[symbol] = state;
+}
+
+// --------------------------------------------------------------------------
+// BLUEPRINT 3: Right-Tail Maximization (TATS & Time Decay)
+// --------------------------------------------------------------------------
+void ExecutionEngine::evaluate_tats_and_decay(const std::string& symbol, double current_price) {
+    if (active_tats.find(symbol) == active_tats.end()) return;
+    TATSState& state = active_tats[symbol];
+
+    auto now = std::chrono::system_clock::now().time_since_epoch().count();
+    long long elapsed_mins = (now - state.execution_time) / 60000;
     
-    packet.suggested_risk = 1000.0; 
+    bool close_paper = false;
+    std::string exit_reason = "";
 
-    if (inst_type == "FUTURE" || inst_type == "future") {
-        std::cout << "\n[MISSED ALPHA] Instrument " << symbol << " is a Future. Logging theoretical execution." << std::endl;
-        json shadow_sig = packet.to_json();
-        shadow_sig["reason"] = "NO_FUTURE_PERMISSIONS";
-        TradeLogger::log_simulated_trade(shadow_sig, packet.volatility_forecast, 1.0, mkt.bid, mkt.ask);
-        return; 
+    // 1. Time Decay Flattening
+    if (elapsed_mins > state.lag_minutes * 1.5 && !state.activated) {
+        std::cout << "[TIME DECAY] " << symbol << " shock absorbed by market. Liquidating." << std::endl;
+        
+        if (paper_mode) {
+            close_paper = true;
+            exit_reason = "TIME_DECAY_FLATTEN";
+        } else {
+            Contract contract = resolve_contract(symbol);
+            Order flatten;
+            flatten.orderId = nextOrderId++;
+            flatten.action = (state.side == "BUY") ? "SELL" : "BUY";
+            flatten.orderType = "MKT";
+            flatten.totalQuantity = Decimal(state.current_qty);
+            flatten.transmit = true;
+            
+            client->cancelOrder(state.original_stop_id, "");
+            client->placeOrder(flatten.orderId, contract, flatten);
+            active_tats.erase(symbol);
+            return;
+        }
     }
 
-    // THE FIX: Pass sector into Risk Manager
-    std::string sector = get_sector(symbol);
-    ApprovalStatus status = risk_manager.approve_trade(packet, sector);
-
-    if (!status.approved) {
-        std::cout << "[RISK REJECT] " << symbol << " denied. Reason: " << status.reason << std::endl;
-        return; 
+    // 2. Paper Matching Engine (Stops & Targets)
+    if (paper_mode && !close_paper) {
+        if (state.side == "BUY") {
+            if (current_price <= state.current_stop) { close_paper = true; exit_reason = "STOP_LOSS_HIT"; }
+            else if (current_price >= state.take_profit) { close_paper = true; exit_reason = "TAKE_PROFIT_HIT"; }
+        } else if (state.side == "SELL") {
+            if (current_price >= state.current_stop) { close_paper = true; exit_reason = "STOP_LOSS_HIT"; }
+            else if (current_price <= state.take_profit) { close_paper = true; exit_reason = "TAKE_PROFIT_HIT"; }
+        }
     }
 
-    double approved_qty = status.adjusted_size;
-    std::cout << "[RISK APPROVE] " << symbol << " | Size: " << approved_qty 
-              << " | Reason: " << status.reason << std::endl;
+    // 3. Execute Paper Close & Log to DB
+    if (close_paper) {
+        std::cout << "[PAPER EXIT] " << symbol << " | Reason: " << exit_reason << " | Price: $" << current_price << std::endl;
+        
+        json log_sig;
+        log_sig["symbol"] = symbol;
+        log_sig["action"] = "CLOSE";
+        log_sig["target_price"] = current_price;
+        log_sig["status"] = "PAPER_CLOSED";
+        log_sig["reason"] = exit_reason;
+        
+        TradeLogger::log_simulated_trade(log_sig, 0.0, state.current_qty, current_price, current_price);
 
-    place_order(symbol, packet.side, approved_qty, packet.market_price, packet.catastrophe_stop, packet.target_price);
-    
-    // THE FIX: Record exact sector allocation
-    risk_manager.record_execution(sector, approved_qty * packet.market_price);
+        if (state.side == "BUY") active_positions[symbol] -= state.current_qty;
+        else active_positions[symbol] += state.current_qty;
+
+        if (active_positions[symbol] <= 0) active_positions.erase(symbol);
+        active_tats.erase(symbol);
+        return;
+    }
+
+    // 4. Live Target-Activated Trailing Stop
+    if (!paper_mode && !state.activated) {
+        bool target_hit = (state.side == "BUY" && current_price >= state.activation_target) || 
+                          (state.side == "SELL" && current_price <= state.activation_target);
+
+        if (target_hit) {
+            std::cout << "\n[TATS ACTIVATED] " << symbol << " hit Expected Return threshold (" << state.activation_target << ")." << std::endl;
+            std::cout << " -> Canceling hard stop, initiating Volatility Trail (1.5x ATR)." << std::endl;
+            
+            client->cancelOrder(state.original_stop_id, "");
+
+            Contract contract = resolve_contract(symbol);
+            Order trail;
+            trail.orderId = nextOrderId++;
+            trail.action = (state.side == "BUY") ? "SELL" : "BUY";
+            trail.orderType = "TRAIL";
+            trail.auxPrice = state.atr * 1.5; 
+            trail.totalQuantity = Decimal(state.current_qty);
+            trail.tif = "GTC";
+            trail.transmit = true;
+
+            client->placeOrder(trail.orderId, contract, trail);
+            state.activated = true; 
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// UTILS & IBKR CALLBACKS (Preserved Unmodified)
+// --------------------------------------------------------------------------
+
+double ExecutionEngine::calculate_position_size(double price, double volatility) {
+    return 1.0; 
+}
+
+std::string ExecutionEngine::get_sector(const std::string& symbol) {
+    if (symbol == "HG" || symbol == "GC" || symbol == "SI") return "METALS";
+    if (symbol == "CL" || symbol == "NG") return "ENERGY";
+    if (symbol == "ES" || symbol == "NQ") return "INDICES";
+    return "GENERAL";
+}
+
+Contract ExecutionEngine::resolve_contract(const std::string& symbol) {
+    return ContractResolver::resolve(symbol);
 }
 
 std::vector<Order> ExecutionEngine::bracket_order(int parentId, const std::string& action, double qty, double limit_price, double stop_price, double take_profit) {
@@ -158,7 +396,6 @@ std::vector<Order> ExecutionEngine::bracket_order(int parentId, const std::strin
 }
 
 void ExecutionEngine::place_order(const std::string& symbol, const std::string& action, double quantity, double limit_price, double stop_price, double take_profit) {
-    
     if (paper_mode) {
         std::cout << "[PAPER] BRACKET " << action << " " << quantity << " " << symbol 
                   << " @ " << limit_price << " [Stop: " << stop_price << " | Target: " << take_profit << "]" << std::endl;
@@ -211,27 +448,6 @@ void ExecutionEngine::place_order(const std::string& symbol, const std::string& 
     }
 }
 
-// --------------------------------------------------------------------------
-// UTILS & CALLBACKS
-// --------------------------------------------------------------------------
-
-double ExecutionEngine::calculate_position_size(double price, double volatility) {
-    return 1.0; 
-}
-
-std::string ExecutionEngine::get_sector(const std::string& symbol) {
-    if (symbol == "HG" || symbol == "GC" || symbol == "SI") return "METALS";
-    if (symbol == "CL" || symbol == "NG") return "ENERGY";
-    if (symbol == "ES" || symbol == "NQ") return "INDICES";
-    return "GENERAL";
-}
-
-Contract ExecutionEngine::resolve_contract(const std::string& symbol) {
-    return ContractResolver::resolve(symbol);
-}
-
-// --- IBKR OVERRIDES ---
-
 void ExecutionEngine::tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) {
     std::lock_guard<std::mutex> lock(engine_mtx);
     if (tickerid_to_symbol.find(tickerId) == tickerid_to_symbol.end()) return;
@@ -239,7 +455,10 @@ void ExecutionEngine::tickPrice(TickerId tickerId, TickType field, double price,
     std::string sym = tickerid_to_symbol[tickerId];
     if (field == BID) market_cache[sym].bid = price;
     else if (field == ASK) market_cache[sym].ask = price;
-    else if (field == LAST) market_cache[sym].last = price;
+    else if (field == LAST) {
+        market_cache[sym].last = price;
+        evaluate_tats_and_decay(sym, price);
+    }
 }
 
 void ExecutionEngine::nextValidId(OrderId orderId) {
@@ -254,8 +473,6 @@ void ExecutionEngine::nextValidId(OrderId orderId) {
 void ExecutionEngine::error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) {
     if (errorCode == 502) return;
 
-    std::cerr << "[IBKR ERROR] Id: " << id << " Code: " << errorCode << " Msg: " << errorMsg << std::endl;
-    
     if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158) return; 
     std::cerr << "[IBKR ERROR] Id: " << id << " Code: " << errorCode << " Msg: " << errorMsg << std::endl;
     

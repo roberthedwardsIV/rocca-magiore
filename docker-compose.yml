@@ -20,12 +20,11 @@ services:
       - AIS_API_KEY=${AIS_API_KEY}
       - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID}
       - OPENSKY_CLIENT_SECRET${OPENSKY_CLIENT_SECRET}
-
+    networks:
+      - rocco_net
     depends_on:
       - hippocampus
       - corpus_callosum
-      - ibkr_gateway
-    network_mode: "service:ibkr_gateway"  
     tty: true
     restart: always
 
@@ -82,32 +81,18 @@ services:
       - ./common:/app/common
     container_name: brainstem
     environment:
+      - IB_HOST=ibkr_gateway
+      - IB_PORT=4004          
+      - TSDB_HOST=market_tsdb
+      - TSDB_PORT=5432       
       - REDIS_HOST=corpus_callosum
-    depends_on:
-      - corpus_callosum
-      - ibkr_gateway
-    network_mode: "service:ibkr_gateway"
-    restart: always
-
-  # ------------------ IBKR Gateway (Brokerage Access) ------------------
-  ibkr_gateway:
-    image: ghcr.io/gnzsnz/ib-gateway:stable
-    container_name: ibkr_gateway
-    environment:
-      - TWS_USERID=${TWS_USERID}       
-      - TWS_PASSWORD=${TWS_PASSWORD}   
-      - TRADING_MODE=paper             
-      - READ_ONLY_API=false            
-      - TWS_ACCEPT_INCOMING=true  
-      - VNC_SERVER_PASSWORD=secure_vnc_pass
-    ports:      
-      - "4001:4001"  
-      - "4002:4002"  
-      - "5900:5900" 
-    volumes:
-      - ./ibkr_config/jts.ini:/home/ibgateway/Jts/jts.ini
+      - REDIS_PORT=6379
     networks:
       - rocco_net
+      - market_net
+    depends_on:
+      - corpus_callosum
+      - hippocampus
     restart: always
 
   # ----------------- Hippocampus (Postgres/gis SQL | Database) -----------------
@@ -151,7 +136,7 @@ services:
     networks:
       - rocco_net
     ports:
-      - "8000:8000"
+      - "0.0.0.0:8001:8001"
 
   # ------------------ Visual Cortex (Frontend UI) ------------------
   visual_cortex_frontend:
@@ -165,7 +150,7 @@ services:
     networks:
       - rocco_net
     ports:
-      - "3000:3000"
+      - "0.0.0.0:3000:3000"
 
   # ------------------- Database Web GUI -------------------
   db_viewer:
@@ -176,6 +161,8 @@ services:
       - "8081:8080"
     depends_on:
       - hippocampus
+    volumes:
+      - ./hippocampus/utils/adminer.css:/var/www/html/adminer.css
     networks:
       - rocco_net
 
@@ -187,3 +174,6 @@ volumes:
 networks:
   rocco_net:
     driver: bridge
+  market_net:
+    external: true
+    name: market_data_system_default

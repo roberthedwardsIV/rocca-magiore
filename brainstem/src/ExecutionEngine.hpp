@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <hiredis/hiredis.h>
+#include <pqxx/pqxx> 
 
 using json = nlohmann::json;
 
@@ -27,28 +28,56 @@ struct MarketData {
     long long timestamp = 0;
 };
 
+// --- Blueprint Structs ---
+struct TSDBMetrics {
+    double atr_14 = 0.0;
+    double vol_60_annualized = 0.0;
+    double last_close = 0.0;
+    bool is_valid = false;
+};
+
+struct TATSState {
+    bool activated = false;
+    double activation_target = 0.0;
+    double atr = 0.0;
+    int original_stop_id = 0;
+    std::string side;
+    double entry_price = 0.0;
+    long long execution_time = 0;
+    int lag_minutes = 0;
+    double current_qty = 0.0;
+    double current_stop = 0.0;
+    double take_profit = 0.0;
+};
+
 class ExecutionEngine : public EWrapper {
 public:
     ExecutionEngine();
     ~ExecutionEngine();
     std::atomic<bool> is_ready{false};
+    bool paper_mode = false;
+
     bool connect(const char* host, int port, int clientId);
     void process_messages();
+    
+    // Core Logic Entrances
     void handle_thalamus_signal(const json& signal);
+    void execute_coalesced_signals(const std::string& symbol, const std::vector<json>& signals, const std::string& inst_type);    
+    void evaluate_tats_and_decay(const std::string& symbol, double current_price);
 
-    bool paper_mode = false; 
-
+    // Execution Helpers
     std::vector<Order> bracket_order(int parentId, const std::string& action, double qty, double limit_price, double stop_price, double take_profit);
     void place_order(const std::string& symbol, const std::string& action, double quantity, double limit_price, double stop_price, double take_profit);
 
+    // EWrapper Overrides
     void nextValidId(OrderId orderId) override;
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override;
     void error(int id, int errorCode, const std::string& errorMsg, const std::string& advancedOrderRejectJson) override;
     void orderStatus(OrderId orderId, const std::string& status, Decimal filled, Decimal remaining, double avgFillPrice, int permId, int parentId, double lastFillPrice, int clientId, const std::string& whyHeld, double mktCapPrice) override;
-
     void updateAccountValue(const std::string& key, const std::string& val, const std::string& currency, const std::string& accountName) override;
     void updatePortfolio(const Contract& contract, Decimal position, double marketPrice, double marketValue, double averageCost, double unrealizedPNL, double realizedPNL, const std::string& accountName) override;
-
+    
+    // EWrapper Empty Stubs
     void tickSize(TickerId tickerId, TickType field, Decimal size) override {}
     void tickString(TickerId tickerId, TickType field, const std::string& value) override {}
     void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
@@ -146,15 +175,20 @@ private:
     std::unordered_map<std::string, MarketData> market_cache;
     std::unordered_map<std::string, double> active_positions;
     
-    // --- THE FIX: Declare pending_orders map to track Missed Alpha ---
     std::unordered_map<int, json> pending_orders; 
+    std::unordered_map<std::string, std::vector<json>> signal_buffer; 
+    std::unordered_map<std::string, TATSState> active_tats;
 
     RiskManager risk_manager;
-
     redisContext* redis_pub;
     double current_balance = 0.0;
     double current_pnl = 0.0;
 
+    const std::string tsdb_conn_str = "dbname=market_data user=quant_admin password=REMOVED host=host.docker.internal port=5433";    
+    
+    double fetch_latest_price(const std::string& symbol); 
+    TSDBMetrics fetch_quant_metrics(const std::string& symbol);
+    double fetch_portfolio_covariance(const std::string& new_symbol);
     double calculate_position_size(double price, double volatility);
     Contract resolve_contract(const std::string& symbol);
     std::string get_sector(const std::string& symbol);

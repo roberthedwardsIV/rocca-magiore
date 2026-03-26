@@ -131,6 +131,7 @@ def run_brain():
                 }
                 
                 r_out.lpush("raw_signals", json.dumps(signal))
+                r_out.publish("raw_signals", json.dumps(signal))
 
         except psycopg2.OperationalError:
             print("[WILDFIRE] DB Connection lost. Reconnecting...", flush=True)

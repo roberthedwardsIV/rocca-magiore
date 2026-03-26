@@ -1,5 +1,6 @@
 FROM gcc:12
 
+# 1. Cleaned up APT dependencies (Removed libprotobuf-dev and protobuf-compiler)
 RUN apt-get update && apt-get install -y \
     cmake libpq-dev libpqxx-dev libhiredis-dev libmseed-dev libwebsockets-dev \
     libcurl4-openssl-dev nlohmann-json3-dev libboost-system-dev \
@@ -7,50 +8,10 @@ RUN apt-get update && apt-get install -y \
     pkg-config libavcodec-dev libavformat-dev libavutil-dev \
     libosmium2-dev libprotozero-dev zlib1g-dev libbz2-dev \
     libswresample-dev libopenblas-dev wget unzip \
-    libprotobuf-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /tmp/ibkr_build
-
-RUN wget -q http://www.netlib.org/misc/intel/IntelRDFPMathLib20U2.tar.gz && \
-    tar -xzf IntelRDFPMathLib20U2.tar.gz && \
-    cd IntelRDFPMathLib20U2/LIBRARY && \
-    sed -i 's/-Qoption,cpp,--extended_float_types//g' makefile && \
-    make CC="gcc -fPIC" && \
-    cp libbid.a /usr/lib/ && \
-    cp -r src /usr/include/intel_math
-
-SHELL ["/bin/bash", "-c"]
-
-RUN wget -q https://interactivebrokers.github.io/downloads/twsapi_macunix.1019.04.zip -O twsapi.zip && \
-    unzip -q twsapi.zip && \
-    mkdir -p /tmp/tws_flat && \
-    find -L IBJts -name "*.cpp" -exec cp -f {} /tmp/tws_flat/ \; && \
-    find -L IBJts -name "*.h" -exec cp -f {} /tmp/tws_flat/ \; && \
-    find -L IBJts -name "*.c" -exec cp -f {} /tmp/tws_flat/ \; && \
-    find -L IBJts -name "*.proto" -exec cp -n {} /tmp/tws_flat/ \; || true && \
-    cd /tmp/tws_flat && \
-    if ls *.proto 1> /dev/null 2>&1; then \
-        protoc --cpp_out=. *.proto; \
-    fi && \
-    for file in *.cpp *.cc; do \
-        if [[ "$file" == *"Main.cpp"* ]]; then continue; fi; \
-        if [[ ! -f "$file" ]]; then continue; fi; \
-        g++ -c "$file" \
-        -std=c++17 \
-        -fPIC \
-        -O3 \
-        -DIB_USE_STD_STRING \
-        -I/usr/include/intel_math \
-        -I. ; \
-    done && \
-    ar rcs libtwsapi.a *.o && \
-    cp libtwsapi.a /usr/lib/ && \
-    mkdir -p /usr/include/IB && \
-    cp *.h /usr/include/IB/ && \
-    chmod -R 755 /usr/include/IB && \
-    ls -la /usr/include/IB/CommissionReport.h && \
-    cd / && rm -rf /tmp/tws_flat /tmp/ibkr_build
+# --- REMOVED: Intel Math Library Build Block ---
+# --- REMOVED: TWS API Build Block ---
 
 SHELL ["/bin/sh", "-c"]
 
@@ -77,28 +38,21 @@ RUN git clone --branch v1.5.4 https://github.com/ggerganov/whisper.cpp.git && \
 WORKDIR /app
 
 COPY ./common /app/common
-
 COPY ./sensory_receptors /app
 
 RUN rm -rf build && mkdir build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc)
 
+# --- START SCRIPT (Already verified) ---
 RUN echo "#!/bin/bash\n\
 # Start Sensors\n\
+./build/geojson &\n\
 ./build/seismic_engine &\n\
-./build/aviation_ingest &\n\
-./build/ais_ingest &\n\
 ./build/fire_ingest &\n\
-./build/ibkr_ingest &\n\
-./build/fred_macro &\n\
-./build/filings_ingest &\n\
-./build/src/data_sources/med_streams/radio_supervisor &\n\
-./build/twitter_recon &\n\
-\n\
-# Map Ingestion Logic (Overpass API)\n\
-echo \"[SYSTEM] Booting OSM Overpass API Ingestor...\"\n\
-./build/osm_ingest &\n\
+#./build/aviation_ingest &\n\
+#./build/ais_ingest &\n\
+#./build/fred_macro &\n\
 \n\
 # Keep container alive and wait for background processes\n\
 wait" > start.sh

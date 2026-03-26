@@ -141,6 +141,7 @@ def process_inference(station_id, data_array):
                         }
                     }
                     r_bus.lpush("raw_signals", json.dumps(signal_packet))
+                    r_bus.publish("raw_signals", json.dumps(signal_packet))
                     print(f"[Seismic Monitor Stream] Earthquake {entity_id} data sent to Redis.")
 
                 elif detection["class"].startswith("Logistics"): 

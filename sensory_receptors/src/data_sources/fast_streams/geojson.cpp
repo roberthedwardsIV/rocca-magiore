@@ -10,6 +10,7 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <sw/redis++/redis++.h> 
+#include <unordered_set>
 
 using json = nlohmann::json;
 using namespace sw::redis;
@@ -32,7 +33,8 @@ struct SignalPacket {
         j["data"] = {
             {"lat", data.at("lat")}, 
             {"lon", data.at("lon")}, 
-            {"mag", data.at("mag")}
+            {"mag", data.at("mag")},
+            {"depth", data.at("depth")}
         };
         return j.dump();
     }
@@ -68,8 +70,9 @@ std::string fetchUSGSData(const std::string& url) {
 // Main(): runs the fetchUSGSData() every minute and sends signal packets to "raw_signals" redis channel for any new earthquakes found
 int main() {
     const std::string url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson";
-    std::string last_processed_id = "";
-
+    std::unordered_set<std::string> seen_ids;
+    bool is_initial_run = true;
+    
     auto redis = Redis("tcp://corpus_callosum:6379");
 
     std::cout << "[geojson] Earthquake Monitor Started. Connecting to Redis & Postgres..." << std::endl;
@@ -81,39 +84,49 @@ int main() {
             try {
                 auto data = json::parse(raw_data);
                 auto features = data["features"];
+                
+                std::unordered_set<std::string> current_feed_ids;
 
                 if (!features.empty()) {
-                    std::string current_newest_id = features[0]["id"];
+                    for (const auto& feature : features) {
+                        std::string id = feature["id"];
+                        current_feed_ids.insert(id);
 
-                    if (current_newest_id != last_processed_id) {
-                        for (const auto& feature : features) {
-                            std::string id = feature["id"];
-                            if (id == last_processed_id) break;
+                        // If ID hasn't been seen before
+                        if (seen_ids.find(id) == seen_ids.end()) {
+                            
+                            // Only trigger signals if this isn't the first boot
+                            if (!is_initial_run) {
+                                auto props = feature["properties"];
+                                auto geometry = feature["geometry"]["coordinates"];
 
-                            auto props = feature["properties"];
-                            auto geometry = feature["geometry"]["coordinates"];
+                                float mag = props["mag"];
+                                float lon = geometry[0];
+                                float lat = geometry[1];
+                                float depth = geometry[2];
+                                long long ms_since_epoch = props["time"];
 
-                            float mag = props["mag"];
-                            float lon = geometry[0];
-                            float lat = geometry[1];
-                            long long ms_since_epoch = props["time"];
+                                // Ignore intensity since it takes USGS days to get accurate survey
+                                SignalPacket signal;
+                                signal.entity_id = id;
+                                signal.data["lat"] = lat;
+                                signal.data["lon"] = lon;
+                                signal.data["mag"] = mag;
+                                signal.data["depth"] = depth;
+                                signal.timestamp = ms_since_epoch;
 
-                            // Ignore intensity since it takes USGS days to get accurate survey
-                            SignalPacket signal;
-                            signal.entity_id = id;
-                            signal.data["lat"] = lat;
-                            signal.data["lon"] = lon;
-                            signal.data["mag"] = mag;
-                            signal.timestamp = ms_since_epoch;
+                                redis.lpush("raw_signals", signal.to_json_str());
+                                redis.publish("raw_signals", signal.to_json_str());
 
-                            redis.lpush("raw_signals", signal.to_json_str());
-
-                            std::cout << "[geojson] Earthquake Alert at: " << std::fixed << std::setprecision(2) << lat;
-                            std::cout << ", " << std::fixed << std::setprecision(2) << lon;
-                            std::cout << std::endl;
+                                std::cout << "[geojson] Earthquake Alert at: " << std::fixed << std::setprecision(2) << lat;
+                                std::cout << ", " << std::fixed << std::setprecision(2) << lon;
+                                std::cout << std::endl;
+                            }
                         }
-                        last_processed_id = current_newest_id;
                     }
+                    // Update cache for the next cycle
+                    seen_ids = current_feed_ids;
+                    is_initial_run = false;
                 }
             } catch (const std::exception& e) {
                 std::cerr << "[geojson] (ERR) JSON processing error: " << e.what() << std::endl;

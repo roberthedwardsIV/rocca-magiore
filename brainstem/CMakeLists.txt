@@ -8,15 +8,16 @@ find_package(PkgConfig REQUIRED)
 
 # Use PkgConfig to find hiredis if possible, or link standard
 pkg_check_modules(HIREDIS hiredis)
+pkg_check_modules(PQXX REQUIRED libpqxx)
 
 # Include directories
 include_directories(
     src 
-    /usr/include/intel_math  # For Intel Decimal Math headers
-    /usr/include             # For IB headers (in IB/ folder)
+    /usr/include/intel_math  
+    /usr/include             
+    ${CMAKE_SOURCE_DIR}/common/include
+    ${PQXX_INCLUDE_DIRS} 
 )
-
-include_directories(${CMAKE_SOURCE_DIR}/common/include)
 
 add_executable(brainstem_engine 
     src/main.cpp 
@@ -34,4 +35,6 @@ target_link_libraries(brainstem_engine
     pthread
     dl
     m           # Math library (required for Intel Decimal)
+    pqxx
+    pq
 )

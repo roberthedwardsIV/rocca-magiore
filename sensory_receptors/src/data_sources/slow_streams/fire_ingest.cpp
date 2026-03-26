@@ -109,85 +109,97 @@ std::vector<FirePoint> parse_firms_csv(const std::string& csv_data) {
 }
 
 // --- CORE PROCESSING LOGIC ---
-int process_url(const std::string& url, redisContext* redis) {
-    log_info("Fetching: " + url);
+int process_url(const std::string& url, redisContext* redis, bool silent_mode) {
+    log_info("Fetching: " + url + (silent_mode ? " [INITIAL SNAPSHOT - SILENT]" : " [LIVE MODE]"));
     std::string csv_data = fetch_csv_data(url);
-    
     if (csv_data.empty()) return 0;
 
     auto points = parse_firms_csv(csv_data);
-    if (points.empty()) {
-        log_info("Valid CSV received, but contained 0 points.");
-        return 0;
-    }
+    if (points.empty()) return 0;
 
     int new_pts = 0;
-    int dup_pts = 0;
+    int cached_pts = 0;
 
     for (const auto& p : points) {
-        // Unique ID: Lat_Lon_Time
+        // Unique ID: Lat_Lon_Date_Time (NASA's specific detection event)
         std::string unique_id = std::to_string(p.lat) + "_" + std::to_string(p.lon) + "_" + p.acq_date + "_" + p.acq_time;
         std::string cache_key = "fire_seen:" + unique_id;
 
-        // 1. Check Redis Cache (SETNX = Set if Not Exists)
-        // Returns 1 if new, 0 if exists
+        // SETNX: 1 if new to our system, 0 if we've seen this detection before
         redisReply* reply = (redisReply*)redisCommand(redis, "SET %s 1 NX EX %d", cache_key.c_str(), CACHE_TTL_SECONDS);
-        
-        bool is_new = false;
-        if (reply) {
-            if (reply->type == REDIS_REPLY_STATUS && std::string(reply->str) == "OK") is_new = true; // For simple SET
-            if (reply->type == REDIS_REPLY_INTEGER && reply->integer == 1) is_new = true; // For SETNX
-            freeReplyObject(reply);
-        }
+        bool is_new_to_cache = (reply && reply->type == REDIS_REPLY_STATUS && std::string(reply->str) == "OK");
+        if (reply) freeReplyObject(reply);
 
-        if (!is_new) {
-            dup_pts++;
+        if (!is_new_to_cache) {
+            cached_pts++;
             continue;
         }
 
-        // 2. Push New Fire to Stream
-        json j;
-        j["source"] = "NASA_FIRMS";
-        j["lat"] = p.lat;
-        j["lon"] = p.lon;
-        j["temp_k"] = p.temp_kelvin;
-        j["frp"] = p.frp;
-        j["conf"] = p.confidence;
-        j["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        
-        std::string payload = j.dump();
-        redisCommand(redis, "LPUSH fire_stream_buffer %s", payload.c_str());
-        new_pts++;
+        // Only push to the Thalamus if we are NOT in the initial baseline fetch
+        if (!silent_mode) {
+            json j;
+            j["source"] = "NASA_FIRMS";
+            j["lat"] = p.lat;
+            j["lon"] = p.lon;
+            j["temp_k"] = p.temp_kelvin;
+            j["frp"] = p.frp;
+            j["acq_dt"] = p.acq_date + " " + p.acq_time;
+            j["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            
+            redisCommand(redis, "LPUSH fire_stream_buffer %s", j.dump().c_str());
+            new_pts++;
+        } else {
+            new_pts++; // Just counting for the log in silent mode
+        }
     }
 
-    log_info("Batch Result: " + std::to_string(points.size()) + " total | " + std::to_string(new_pts) + " new | " + std::to_string(dup_pts) + " duplicates.");
+    log_info("Result: " + std::to_string(new_pts) + " cached as baseline | " + std::to_string(cached_pts) + " existing.");
     return points.size();
 }
 
 int main() {
     log_info("Booting NASA FIRMS Gateway (Smart Poll Mode)...");
 
-    // 1. KEY LOADING
+    // 1. KEY LOADING (Moved outside the loop for efficiency)
     const char* env_key = std::getenv("NASA_FIRMS_KEY");
-    if (!env_key) { log_error("CRITICAL: NASA_FIRMS_KEY missing."); return 1; }
+    if (!env_key) { 
+        log_error("CRITICAL: NASA_FIRMS_KEY missing from environment."); 
+        return 1; 
+    }
     std::string api_key = trim_key(std::string(env_key));
     log_info("Loaded Key: " + api_key.substr(0, 4) + "....");
 
     // 2. REDIS CONNECT
     redisContext* redis = redisConnect(REDIS_HOST.c_str(), REDIS_PORT);
-    if (!redis || redis->err) { log_error("Redis Connection Failed."); return 1; }
+    if (!redis || redis->err) { 
+        log_error("Redis Connection Failed: " + (redis ? std::string(redis->errstr) : "Memory error")); 
+        return 1; 
+    }
 
-    // 3. MAIN LOOP
+    // 3. CHECK INITIALIZATION STATE
+    bool initialized = false;
+    redisReply* init_check = (redisReply*)redisCommand(redis, "GET firms_initialized");
+    if (init_check && init_check->type == REDIS_REPLY_STRING && std::string(init_check->str) == "1") {
+        initialized = true;
+        log_info("System already initialized in Redis. Resuming Live Mode.");
+    }
+    if (init_check) freeReplyObject(init_check);
+
+    // 4. MAIN LOOP
     while (true) {
-        // STRATEGY: Try 1 Day. If empty, try 2 Days.
-        std::string url_1day = "https://firms.modaps.eosdis.nasa.gov/api/area/csv/" + api_key + "/VIIRS_SNPP_NRT/world/1";
+        // Construct URL using the pre-loaded api_key
+        std::string url = "https://firms.modaps.eosdis.nasa.gov/api/area/csv/" + api_key + "/VIIRS_SNPP_NRT/world/1";
         
-        int count = process_url(url_1day, redis);
-
-        if (count == 0) {
-            log_info("Day 1 was empty (likely latency). Fallback to Day 2...");
-            std::string url_2day = "https://firms.modaps.eosdis.nasa.gov/api/area/csv/" + api_key + "/VIIRS_SNPP_NRT/world/2";
-            process_url(url_2day, redis);
+        if (!initialized) {
+            log_info("ESTABLISHING BASELINE (System Zero). No signals will be generated...");
+            process_url(url, redis, true); // SILENT MODE
+            
+            // Persist the initialized state to Redis
+            redisCommand(redis, "SET firms_initialized 1");
+            initialized = true;
+            log_info("Baseline established. Entering Live Monitoring...");
+        } else {
+            process_url(url, redis, false); // LIVE MODE
         }
 
         log_info("Sleeping 10 minutes...");

@@ -8,7 +8,7 @@ public:
     static void route_signal(const nlohmann::json& sig);
     
 private:
-    static double calculate_local_mmi(double epicenter_mag, double epicenter_mmi, double distance_km);
+    static double calculate_local_mmi(double epicenter_mag, double epicenter_mmi, double distance_km, double depth_km);
 };
 
 #endif

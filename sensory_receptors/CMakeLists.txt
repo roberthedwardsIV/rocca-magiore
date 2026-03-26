@@ -55,25 +55,24 @@ target_link_libraries(ais_ingest ${HIREDIS_LIBRARIES} websockets ssl crypto pthr
 add_executable(fire_ingest src/data_sources/slow_streams/fire_ingest.cpp)
 target_link_libraries(fire_ingest ${HIREDIS_LIBRARIES} curl pthread)
 
-# --- FILINGS INGEST ---
-add_executable(filings_ingest src/data_sources/slow_streams/filings_ingest.cpp)
-target_link_libraries(filings_ingest ${PQXX_LIBRARIES} ${HIREDIS_LIBRARIES} curl pthread)
-
 # --- TWITTER RECON ENGINE ---
 add_executable(twitter_recon src/data_sources/slow_streams/twitter_recon_ingest.cpp)
 target_link_libraries(twitter_recon ${PQXX_LIBRARIES} ${HIREDIS_LIBRARIES} curl pthread)
-
-# --- MARKET DATA STREAMS (IBKR) ---
-add_executable(ibkr_ingest src/market_data/ibkr_ingest.cpp)
-target_link_libraries(ibkr_ingest twsapi bid protobuf ${PQXX_LIBRARIES} ${HIREDIS_LIBRARIES} pthread m dl)
 
 # --- MACRO DATA STREAMS (FRED) ---
 add_executable(fred_macro src/market_data/FRED_macro.cpp)
 target_link_libraries(fred_macro ${HIREDIS_LIBRARIES} curl nlohmann_json::nlohmann_json pthread)
 
-# --- DISCOVERY (OSM) ---
-add_executable(osm_ingest src/discovery/osm_ingest.cpp)
-target_link_libraries(osm_ingest ${PQXX_LIBRARIES} ${CURL_LIBRARIES} nlohmann_json::nlohmann_json pthread)
+# --- GEOJSON EARTHQUAKE INGEST ---
+add_executable(geojson src/data_sources/fast_streams/geojson.cpp)
+target_link_libraries(geojson 
+    ${CURL_LIBRARIES} 
+    redis++ 
+    ${HIREDIS_LIBRARIES} 
+    nlohmann_json::nlohmann_json 
+    pthread
+)
 
 # --- RADIO ENGINE ---
 add_subdirectory(src/data_sources/med_streams)
+

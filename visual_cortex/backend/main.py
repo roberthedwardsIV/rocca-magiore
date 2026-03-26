@@ -1,21 +1,12 @@
-import docker
-import threading
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import asyncpg
 import asyncio
 import json
+import redis.asyncio as aioredis
 import os
-import asyncpg
-from fastapi import FastAPI, WebSocket, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-import redis.asyncio as redis
 
-app = FastAPI()
-
-try:
-    docker_client = docker.from_env()
-    print("[BACKEND] Docker socket successfully connected.")
-except Exception as e:
-    print(f"[BACKEND] Docker socket error: {e}")
-    docker_client = None
+app = FastAPI(title="Orbital Synapse API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,293 +15,167 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-REDIS_URL = f"redis://{os.getenv('REDIS_HOST', 'corpus_callosum')}:6379"
-DB_DSN = f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}@{os.getenv('DB_HOST')}:5432/rocco_commodities"
+DB_HOST = os.getenv("DB_HOST", "hippocampus")
+DB_PORT = os.getenv("DB_PORT", "5432")
+REDIS_HOST = os.getenv("REDIS_HOST", "corpus_callosum")
 
-@app.on_event("startup")
-async def startup():
-    app.state.redis = redis.from_url(REDIS_URL)
-    for i in range(5):
-        try:
-            app.state.db = await asyncpg.create_pool(DB_DSN)
-            print(f"[BACKEND] Initialized Hippocampus Connection (Attempt {i+1}).")
-            break
-        except Exception as e:
-            print(f"[BACKEND] Database connection failed: {e}")
-            await asyncio.sleep(2)
+async def get_db_connection():
+    return await asyncpg.connect(
+        user="rocco_admin", password="REMOVED", 
+        database="rocco_commodities", host=DB_HOST, port=DB_PORT
+    )
 
-@app.on_event("shutdown")
-async def shutdown():
-    if hasattr(app.state, 'redis'):
-        await app.state.redis.close()
-    if hasattr(app.state, 'db') and app.state.db:
-        await app.state.db.close()
+import json # Ensure json is imported at the top of your file
 
-@app.get("/api/world_state")
-async def get_world_state(
-    min_lon: float = Query(-180.0), 
-    min_lat: float = Query(-90.0), 
-    max_lon: float = Query(180.0), 
-    max_lat: float = Query(90.0),
-    zoom: float = Query(1.0)
-):
-    """
-    LOD-Enabled World State Fetcher.
-    Only returns entities within the viewport.
-    Filters complexity based on zoom level.
-    """
-    if not hasattr(app.state, 'db') or not app.state.db:
-        return {"error": "DATABASE_NOT_READY"}
-
-    # --- LOD LOGIC ---
-    # Zoom 1-5: Strategic View (Mines, Ports, Pipelines, Mainlines)
-    # Zoom 6-10: Tactical View (Refineries, Regional Rail)
-    # Zoom 11+: Operational View (Local Roads, Substations)
-    
-    line_filter = ""
-    hub_filter = ""
-    
-    if zoom < 6:
-        # High Level: Only critical infrastructure
-        line_filter = "AND type IN ('pipeline', 'shipping_lane', 'rail_mainline', 'highway_trunk')"
-        hub_filter = "AND type IN ('maritime_port', 'power_plant')" 
-    elif zoom < 11:
-        # Mid Level: Add standard rail and distribution
-        line_filter = "AND type NOT IN ('power_grid', 'road')" 
-    
-    # Bounding Box WKT for PostGIS
-    bbox_sql = f"ST_MakeEnvelope({min_lon}, {min_lat}, {max_lon}, {max_lat}, 4326)"
-
-    async with app.state.db.acquire() as conn:
-        try:
-            # 1. ASSETS (Always show Mines/Refineries, but only in view)
-            assets = await conn.fetch(f"""
-                SELECT a.id, a.name, a.type,
-                       COALESCE(a.commodity_types[1], 'unknown') as commodity,
-                       ST_X(ST_Centroid(a.geom)) as lon, 
-                       ST_Y(ST_Centroid(a.geom)) as lat,
-                       COALESCE(s.op_health, 1.0) as op_health
-                FROM assets a
-                LEFT JOIN asset_states s ON a.id = s.asset_id
-                WHERE a.geom && {bbox_sql}
-                LIMIT 3000
-            """)
-
-            # 2. ROUTES (Apply Type Filter + Spatial Filter)
-            lines = await conn.fetch(f"""
-                SELECT line_id as id, name, type, 
-                       ST_AsGeoJSON(geom)::json as geojson,
-                       COALESCE(state_data, '{{}}'::jsonb) as state
-                FROM supply_lines
-                WHERE geom && {bbox_sql}
-                {line_filter}
-                LIMIT 2000 -- Hard cap per viewport to prevent browser crash
-            """)
-
-            # 3. HUBS
-            hubs = await conn.fetch(f"""
-                SELECT id, name, type,
-                       ST_X(ST_Centroid(geom)) as lon,
-                       ST_Y(ST_Centroid(geom)) as lat,
-                       capacity_rating
-                FROM supply_hubs
-                WHERE geom && {bbox_sql}
-                {hub_filter}
-                LIMIT 1500
-            """)
-            
-            # 4. CHOKEPOINTS
-            chokes = await conn.fetch(f"""
-                SELECT id, name, type,
-                       ST_X(ST_Centroid(geom)) as lon,
-                       ST_Y(ST_Centroid(geom)) as lat,
-                       structural_health
-                FROM supply_chokepoints
-                WHERE geom && {bbox_sql}
-                LIMIT 1000
-            """)
-
-            return {
-                "assets": [dict(r) for r in assets],
-                "lines": [dict(r) for r in lines],
-                "hubs": [dict(r) for r in hubs],
-                "chokepoints": [dict(r) for r in chokes]
-            }
-        except Exception as e:
-            print(f"[API ERROR] World State Failed: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/portfolio_pulse")
-async def get_portfolio_pulse():
-    if not hasattr(app.state, 'db') or not app.state.db:
-        return {"pnl": 0, "tickers": []}
-
-    # 1. Fetch live account state from Redis (populated by the C++ Brainstem)
-    account_pnl = 0.0
-    account_balance = 0.0
+@app.get("/api/assets")
+async def get_assets():
     try:
-        if hasattr(app.state, 'redis'):
-            raw_state = await app.state.redis.get("account_state")
-            if raw_state:
-                state_data = json.loads(raw_state)
-                account_pnl = state_data.get("pnl", 0.0)
-                account_balance = state_data.get("balance", 0.0)
+        conn = await get_db_connection()
+        query = """
+            SELECT 
+                a.id, 
+                a.name, 
+                a.type, 
+                a.source,
+                a.latitude AS lat, 
+                a.longitude AS lon, 
+                a.commodity_types::text AS commodity_types,
+                a.metadata->>'operator' AS operator,
+                a.metadata->>'company' AS company,
+                a.metadata->>'owner_name_raw' AS owner_name_raw,
+                CAST(a.metadata->>'is_private' AS BOOLEAN) AS is_private,
+                
+                -- The Height Multiplier: Sum of (Absolute Beta * Confidence)
+                COALESCE(SUM(ABS(m.beta_coefficient) * m.confidence_score), 0) AS total_sensitivity,
+                
+                -- The HUD Data: Pack the matrix entries into a JSON array
+                COALESCE(
+                    json_agg(
+                        json_build_object(
+                            'ticker', m.ticker,
+                            'event_type', m.signal_category,
+                            'beta', m.beta_coefficient,
+                            'conf', m.confidence_score
+                        )
+                    ) FILTER (WHERE m.ticker IS NOT NULL), '[]'::json
+                )::text AS matrix_entries
+                
+            FROM assets a
+            LEFT JOIN sensitivity_matrix m ON m.entity_id = 'ASSET_' || a.id
+            WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL 
+            GROUP BY a.id
+            LIMIT 5000
+        """
+        rows = await conn.fetch(query)
+        await conn.close()
+        
+        # Parse the JSON string from Postgres into a Python list before sending to React
+        assets = []
+        for r in rows:
+            asset_dict = dict(r)
+            if asset_dict.get('matrix_entries'):
+                asset_dict['matrix_entries'] = json.loads(asset_dict['matrix_entries'])
+            assets.append(asset_dict)
+            
+        return assets
     except Exception as e:
-        print(f"[API ERROR] Redis Account State Fetch Failed: {e}")
+        print(f"[DB ERROR] Failed to fetch assets: {e}")
+        return []
 
-    # 2. Fetch the physical infrastructure & market data from Postgres
-    async with app.state.db.acquire() as conn:
-        try:
-            # THE FIX: Added a lateral subquery (ts_hist) to aggregate the last 20 price points into an array
-            tickers = await conn.fetch("""
-                SELECT t.symbol, t.instrument_type, 
-                       COALESCE(ts_latest.price, 0.0) as price, 
-                       COALESCE(ts_latest.volatility, 0.0) as vol,
-                       ts_hist.history
-                FROM ticker_registry t
-                LEFT JOIN (
-                    SELECT DISTINCT ON (symbol) symbol, price, volatility 
-                    FROM ticker_states ORDER BY symbol, time_bucket DESC
-                ) ts_latest ON t.symbol = ts_latest.symbol
-                LEFT JOIN (
-                    SELECT symbol, array_agg(price ORDER BY time_bucket ASC) as history
-                    FROM (
-                        SELECT symbol, price, time_bucket,
-                               ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY time_bucket DESC) as rn
-                        FROM ticker_states
-                    ) sub
-                    WHERE rn <= 20
-                    GROUP BY symbol
-                ) ts_hist ON t.symbol = ts_hist.symbol
-                WHERE t.active = TRUE
-            """)
+@app.get("/api/links")
+async def get_links():
+    try:
+        conn = await get_db_connection()
+        # Added dependency_weight, transport_lag_days, and confidence_score
+        query = """
+            SELECT 
+                l.origin_asset_id, 
+                l.target_asset_id,
+                l.dependency_weight,
+                l.transport_lag_days,
+                l.confidence_score,
+                o.longitude AS origin_lon, 
+                o.latitude AS origin_lat,
+                t.longitude AS target_lon, 
+                t.latitude AS target_lat
+            FROM asset_trade_links l
+            JOIN assets o ON l.origin_asset_id = o.id
+            JOIN assets t ON l.target_asset_id = t.id
+            WHERE l.active = TRUE
+        """
+        rows = await conn.fetch(query)
+        await conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[DB ERROR] Failed to fetch links: {e}")
+        return []
 
-            asset_health = await conn.fetchrow("""
-                SELECT AVG(op_health) as avg_health, 
-                       COUNT(*) FILTER (WHERE op_health < 0.5) as critical_count
-                FROM asset_states
-            """)
-            
-            health_val = asset_health['avg_health'] if asset_health else None
-            safe_avg_health = float(health_val) if health_val is not None else 1.0
-            safe_critical = asset_health['critical_count'] if asset_health and asset_health['critical_count'] else 0
-            
-            # Format the output to safely handle the PostgreSQL array
-            formatted_tickers = []
-            for t in tickers:
-                formatted_tickers.append({
-                    "symbol": t["symbol"],
-                    "instrument_type": t["instrument_type"],
-                    "price": t["price"],
-                    "vol": t["vol"],
-                    "history": t["history"] if t["history"] else []
-                })
-
-            return {
-                "pnl": account_pnl,                 
-                "balance": account_balance,      
-                "avg_health": safe_avg_health,
-                "critical_threats": safe_critical,
-                "tickers": formatted_tickers
-            }
-
-        except Exception as e:
-            print(f"[API ERROR] Portfolio Pulse Failed: {e}")
-            return {"pnl": account_pnl, "balance": account_balance, "tickers": [], "error": str(e)}
+@app.get("/api/matrix")
+async def get_matrix():
+    try:
+        conn = await get_db_connection()
+        # FIX: Changed 'event_type' to 'signal_category'.
+        # Safely strips the 'ASSET_' prefix from entity_id so it can JOIN with the assets table.
+        query = """
+            WITH RankedMatrix AS (
+                SELECT 
+                    m.ticker, 
+                    m.signal_category AS event_type, 
+                    m.beta_coefficient, 
+                    m.confidence_score, 
+                    a.name as asset_name,
+                    ROW_NUMBER() OVER(
+                        PARTITION BY LEFT(a.name, 6) 
+                        ORDER BY m.confidence_score DESC
+                    ) as rn
+                FROM sensitivity_matrix m
+                JOIN assets a ON CAST(REPLACE(m.entity_id, 'ASSET_', '') AS INTEGER) = a.id
+            )
+            SELECT 
+                ticker, 
+                event_type, 
+                beta_coefficient, 
+                confidence_score, 
+                asset_name
+            FROM RankedMatrix
+            WHERE rn = 1
+            ORDER BY confidence_score DESC 
+            LIMIT 200;
+        """
+        rows = await conn.fetch(query)
+        await conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[DB ERROR] Failed to fetch matrix: {e}")
+        return []
 
 @app.websocket("/ws/stream")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    pubsub = app.state.redis.pubsub()
-    await pubsub.subscribe("global_sky", "maritime_ais", "raw_signals", "execution_signals", "state_vectors")
+    redis = aioredis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
+    pubsub = redis.pubsub()
+    
+    # NEW: Added execution_signals and state_vectors for the right sidebar
+    await pubsub.subscribe("raw_signals", "system_logs", "global_sky", "maritime_ais", "execution_signals", "state_vectors")
     
     try:
-        while True:
-            message = await pubsub.get_message(ignore_subscribe_messages=True)
-            if message:
-                channel = message['channel'].decode()
-                data = message['data'].decode()
-                if "keepalive" in data: continue
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                channel = message["channel"]
                 try:
-                    payload = json.loads(data)
+                    payload = json.loads(message["data"])
                 except json.JSONDecodeError:
-                    payload = data  # Fallback for plain text messages
-                    
-                await websocket.send_json({"channel": channel, "payload": payload})
+                    payload = {"raw_text": message["data"]}
                 
-            await asyncio.sleep(0.01)
-    except Exception as e:
-        print(f"[WS_ERR] WebSocket disconnected: {e}")
+                out_msg = {"channel": channel, "payload": payload}
+                
+                if channel == "system_logs":
+                    out_msg["container"] = payload.get("container", "UNKNOWN")
+                    out_msg["log"] = payload.get("log", str(payload))
+                
+                await websocket.send_json(out_msg)
+    except WebSocketDisconnect:
+        pass
     finally:
-        await pubsub.close()
-
-
-@app.websocket("/ws/logs")
-async def logs_websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    
-    if not docker_client:
-        await websocket.send_json({"container": "SYSTEM", "log": "Docker socket not mounted."})
-        return
-
-    # The 6 core services we want to monitor
-    target_containers = [
-        "frontal_lobe", 
-        "sensory_receptors", 
-        "ibkr_gateway", 
-        "thalamus", 
-        "hippocampus", 
-        "visual_cortex_backend"
-    ]
-
-    queue = asyncio.Queue()
-    loop = asyncio.get_running_loop()
-    stop_event = threading.Event()
-
-    # Worker function that runs in a background thread for each container
-    # Worker function that runs in a background thread for each container
-    def tail_container_logs(container_name):
-        try:
-            container = docker_client.containers.get(container_name)
-            buffer = "" # Add a string buffer to catch byte chunks
-            for chunk in container.logs(stream=True, follow=True, tail=20):
-                if stop_event.is_set():
-                    break
-                if chunk:
-                    # Decode and append to buffer
-                    buffer += chunk.decode('utf-8', errors='ignore')
-                    # Only yield when we have a complete line
-                    while '\n' in buffer:
-                        line, buffer = buffer.split('\n', 1)
-                        clean_line = line.strip()
-                        if clean_line:
-                            asyncio.run_coroutine_threadsafe(
-                                queue.put({"container": container_name, "log": clean_line}),
-                                loop
-                            )
-        except docker.errors.NotFound:
-            asyncio.run_coroutine_threadsafe(
-                queue.put({"container": container_name, "log": f"[WARN] Container {container_name} not found."}),
-                loop
-            )
-        except Exception as e:
-            asyncio.run_coroutine_threadsafe(
-                queue.put({"container": container_name, "log": f"[ERROR] {str(e)}"}), 
-                loop
-            )
-
-    # Spawn a listener thread for each container
-    for name in target_containers:
-        t = threading.Thread(target=tail_container_logs, args=(name,), daemon=True)
-        t.start()
-
-    try:
-        # Funnel queue data into the WebSocket to the React frontend
-        while True:
-            msg = await queue.get()
-            await websocket.send_json(msg)
-    except Exception:
-        # Fires when the user closes the diagnostics modal or refreshes
-        pass 
-    finally:
-        stop_event.set() # Signal threads to die
+        await pubsub.unsubscribe()
+        await redis.aclose()
