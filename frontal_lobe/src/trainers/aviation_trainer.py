@@ -4,19 +4,14 @@ import numpy as np
 import time
 import pickle
 import os
+from utils.db_config import db_config
 import sys
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 
 # --- CONFIGURATION ---
-DB_CONFIG = {
-    "dbname": "rocco_commodities",
-    "user": "rocco_admin",
-    "password": "REMOVED",
-    "host": "hippocampus",
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 
 MODEL_DIR = "/app/models"
 MODEL_PATH = f"{MODEL_DIR}/aviation_logistics_multiclass_v1.pkl"

@@ -3,15 +3,10 @@ import requests
 import zipfile
 import io
 import os
+from utils.db_config import db_config
 
 # --- CONFIG ---
-DB_CONFIG = {
-    "dbname": "rocco_commodities",
-    "user": "rocco_admin",
-    "password": "REMOVED",
-    "host": "hippocampus",
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 
 GEONAMES_URL = "http://download.geonames.org/export/dump/cities15000.zip"
 CSV_FILENAME = "cities15000.txt"

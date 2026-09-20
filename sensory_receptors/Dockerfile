@@ -1,6 +1,6 @@
 FROM gcc:12
 
-# 1. Cleaned up APT dependencies (Removed libprotobuf-dev and protobuf-compiler)
+# System dependencies
 RUN apt-get update && apt-get install -y \
     cmake libpq-dev libpqxx-dev libhiredis-dev libmseed-dev libwebsockets-dev \
     libcurl4-openssl-dev nlohmann-json3-dev libboost-system-dev \
@@ -9,9 +9,6 @@ RUN apt-get update && apt-get install -y \
     libosmium2-dev libprotozero-dev zlib1g-dev libbz2-dev \
     libswresample-dev libopenblas-dev wget unzip \
     && rm -rf /var/lib/apt/lists/*
-
-# --- REMOVED: Intel Math Library Build Block ---
-# --- REMOVED: TWS API Build Block ---
 
 SHELL ["/bin/sh", "-c"]
 
@@ -44,7 +41,7 @@ RUN rm -rf build && mkdir build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc)
 
-# --- START SCRIPT (Already verified) ---
+# Entrypoint: start sensor binaries
 RUN echo "#!/bin/bash\n\
 # Start Sensors\n\
 ./build/geojson &\n\

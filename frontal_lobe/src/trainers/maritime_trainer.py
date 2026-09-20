@@ -4,12 +4,10 @@ import time
 import json
 from sklearn.ensemble import RandomForestClassifier
 from geopy.distance import geodesic
+from utils.db_config import db_config
 
 # --- CONFIG ---
-DB_CONFIG = {
-    "dbname": "rocco_commodities", "user": "rocco_admin",
-    "password": "REMOVED", "host": "hippocampus", "port": "5432"
-}
+DB_CONFIG = db_config()
 
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)

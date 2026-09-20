@@ -1,19 +1,25 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <cstdlib>
 #include <pqxx/pqxx>
 #include <hiredis/hiredis.h>
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
+#include "db_conn.hpp"
 
 using json = nlohmann::json;
 
+static std::string env_required(const char* key) {
+    const char* v = std::getenv(key);
+    return (v && *v) ? std::string(v) : std::string();
+}
 
-// Configuration 
-const std::string DB_CONN = "dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432";
-const std::string BSKY_PDS = "https://bsky.social"; 
-const std::string BSKY_HANDLE = "REMOVED"; 
-const std::string BSKY_PASSWORD = "REMOVED"; 
+// Credentials from environment (see .env.example)
+const std::string DB_CONN = hippocampus_conn();
+const std::string BSKY_PDS = "https://bsky.social";
+const std::string BSKY_HANDLE = env_required("BSKY_HANDLE");
+const std::string BSKY_PASSWORD = env_required("BSKY_PASSWORD");
 
 
 // Helper function: writes API call contents into unified format for fetching

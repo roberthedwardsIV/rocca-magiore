@@ -24,7 +24,7 @@ struct StrategyPacket {
     double confidence_score;    
     double volatility_forecast; 
     
-    // NEW: Replaces z_score
+    // Expected return (replaces legacy z_score field)
     double expected_return;     
     int lag_minutes;            
 

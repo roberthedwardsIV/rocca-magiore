@@ -1,12 +1,7 @@
 import psycopg2
+from utils.db_config import db_config
 
-DB_CONFIG = {
-    "dbname": "rocco_commodities",
-    "user": "rocco_admin",
-    "password": "REMOVED",
-    "host": "hippocampus",
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 
 def seed_freight_lanes():
     print("[FREIGHT ORACLE] Connecting to Database...")

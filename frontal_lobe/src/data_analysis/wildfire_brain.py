@@ -3,15 +3,10 @@ import json
 import psycopg2
 import time
 from datetime import datetime
+from utils.db_config import db_config
 
 # --- CONFIG ---
-DB_CONFIG = {
-    "dbname": "rocco_commodities",
-    "user": "rocco_admin",
-    "password": "REMOVED",
-    "host": "hippocampus",
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 
 # Redis: db=0 is the standard bus for raw_signals
 r_in = redis.Redis(host='corpus_callosum', port=6379, db=0)

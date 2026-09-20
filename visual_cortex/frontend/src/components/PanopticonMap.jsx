@@ -3,7 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { _GlobeView as GlobeView, LightingEffect, AmbientLight, DirectionalLight, FlyToInterpolator } from '@deck.gl/core';
 import { GeoJsonLayer, ArcLayer, ColumnLayer, ScatterplotLayer } from '@deck.gl/layers';
 
-// --- HARDWARE LIGHTING PIPELINE ---
+// Lighting
 const ambientLight = new AmbientLight({ color: [255, 255, 255], intensity: 1.0 });
 const dirLight = new DirectionalLight({
   color: [255, 255, 255],
@@ -30,7 +30,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
   const [timeParams, setTimeParams] = useState(0);
   const [showArcs, setShowArcs] = useState(true);
   
-  // NEW: Controlled Camera & Region State
+  // Camera & region filter
   const [viewState, setViewState] = useState(INITIAL_VIEW_STATE);
   const [regionIdx, setRegionIdx] = useState(0);
   const activeRegion = REGIONS[regionIdx];
@@ -76,8 +76,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
     return () => window.removeEventListener('stream-event', handleStream);
   }, []);
 
-  // --- NEW: ZOOM OUT RESET ---
-  // If App.js clears the selectedId (user clicks close on HUD), fly back out to global view
+  // Reset camera when HUD selection is cleared
   useEffect(() => {
     if (!selectedId) {
       setViewState(prev => ({
@@ -92,7 +91,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
     }
   }, [selectedId]);
 
-  // --- NEW: FLY-TO CLICK HANDLER ---
+  // Fly-to on pick
   const handleMapClick = (info) => {
     if (!info.object) return;
     const obj = info.object;
@@ -127,7 +126,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
     if (onSelect) onSelect(obj);
   };
 
-// --- NEW: DYNAMIC ARC FILTER ---
+  // Trade-arc filters
   const filteredLinks = useMemo(() => {
     if (!links || !showArcs) return [];
     
@@ -140,7 +139,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
     });
   }, [links, showArcs, minDependency, minConfidence, maxLag]);
 
-  // --- NEW: REGIONAL ASSET FILTER ---
+  // Regional asset filter
   const filteredAssets = useMemo(() => {
     const all = [...(assets || []), ...(hubs || []), ...(chokepoints || [])];
     if (activeRegion === 'ALL') return all;
@@ -176,8 +175,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
     getFillColor: [10, 15, 22, 255], // Dark landmasses
   });
 
-  // 2. Asset Columns (Uses Filtered Data)
-  // 2. Asset Columns (Height dictated by Matrix Leverage)
+  // Asset columns (height from sensitivity score)
   const columnsLayer = new ColumnLayer({
     id: 'asset-pillars',
     data: filteredAssets,
@@ -189,7 +187,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
     getPosition: d => [d.lon || 0, d.lat || 0],
     getFillColor: d => d.id == selectedId ? [255, 191, 0, 255] : [0, 242, 234, 200],
     
-    // NEW: Height = Sensitivity Score * 1000 (adjust multiplier as needed for visuals)
+    // Elevation scales with total_sensitivity
     getElevation: d => d.total_sensitivity > 0 ? (d.total_sensitivity * 1000000) : 10000, 
     
     onClick: handleMapClick, 
@@ -206,7 +204,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
     getSourceColor: [168, 85, 247, 200], 
     getTargetColor: [255, 0, 128, 200],  
     getTilt: () => 15,
-    onClick: handleMapClick, // Wired to camera sweep
+    onClick: handleMapClick,
   });
 
   // 4. Dynamic Telemetry (Planes & Ships)
@@ -224,8 +222,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
     getFillColor: [255, 191, 0, 200],
   });
 
-  // 5. Kinetic Shock Events
-  // 5. Kinetic Shock Events (Color-coded by type)
+  // Shock events (wildfire / earthquake)
   const shockLayer = new ScatterplotLayer({
     id: 'kinetic-shocks',
     data: events,
@@ -290,7 +287,7 @@ export default function PanopticonMap({ assets, hubs, chokepoints, links, onFetc
           &gt; RGN_FILTER : [{activeRegion}]
         </div>
 
-        {/* --- NEW: ARC SLIDERS --- */}
+        {/* Arc filter sliders */}
         {showArcs && (
           <div className="mt-3 border-t border-[#333333] pt-2 space-y-2 pointer-events-auto">
             {/* Dependency Slider */}

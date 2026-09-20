@@ -1,14 +1,9 @@
 import psycopg2
 import time
 from datetime import datetime
+from utils.db_config import db_config
 
-DB_CONFIG = {
-    "dbname": "rocco_commodities", 
-    "user": "rocco_admin", 
-    "password": "REMOVED", 
-    "host": "hippocampus", 
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 
 def update_baselines():
     print(f"[{datetime.now()}] [SYSTEM] Recalculating Aviation Baselines (90-Day Window)...", flush=True)

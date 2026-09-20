@@ -1,5 +1,5 @@
 #include "ContractResolver.hpp"
-#include "IB/Contract.h" // <--- CRITICAL FIX: Defines 'Contract' type
+#include "IB/Contract.h"
 #include <iostream>
 
 Contract ContractResolver::resolve(const std::string& internal_symbol, const std::string& type) {

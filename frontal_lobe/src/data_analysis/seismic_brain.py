@@ -1,5 +1,6 @@
 import socket
 import os
+from utils.db_config import db_config
 import numpy as np
 import tensorflow as tf
 import psycopg2
@@ -29,13 +30,7 @@ r_bus = redis.Redis(host='corpus_callosum', port=6379)
 model = tf.keras.models.load_model(MODEL_PATH)
 
 # Database credentials + connection
-DB_CONFIG = {
-    "dbname": "rocco_commodities",
-    "user": "rocco_admin",
-    "password": "REMOVED",
-    "host": "hippocampus", 
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 try:
     db_conn = psycopg2.connect(**DB_CONFIG)
     db_conn.autocommit = True

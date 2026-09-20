@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ------------------- Sensory Receptors (C++ | Data Streams) -------------------
   sensory_receptors:
@@ -19,7 +17,10 @@ services:
       - NASA_FIRMS_KEY=${NASA_FIRMS_KEY}
       - AIS_API_KEY=${AIS_API_KEY}
       - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID}
-      - OPENSKY_CLIENT_SECRET${OPENSKY_CLIENT_SECRET}
+      - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET}
+      - FRED_API_KEY=${FRED_API_KEY}
+      - BSKY_HANDLE=${BSKY_HANDLE}
+      - BSKY_PASSWORD=${BSKY_PASSWORD}
     networks:
       - rocco_net
     depends_on:
@@ -43,7 +44,7 @@ services:
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASS}
       - REDIS_HOST=corpus_callosum
-      - HF_TOKEN=REMOVED
+      - HF_TOKEN=${HF_TOKEN}
       - PYTHONUNBUFFERED=1
     depends_on:
       - hippocampus
@@ -87,6 +88,15 @@ services:
       - TSDB_PORT=5432       
       - REDIS_HOST=corpus_callosum
       - REDIS_PORT=6379
+      - TSDB_HOST=${TSDB_HOST:-host.docker.internal}
+      - TSDB_PORT=${TSDB_PORT:-5433}
+      - TSDB_NAME=${TSDB_NAME:-market_data}
+      - TSDB_USER=${TSDB_USER:-quant_admin}
+      - TSDB_PASS=${TSDB_PASS}
+      - DB_HOST=hippocampus
+      - DB_NAME=rocco_commodities
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
     networks:
       - rocco_net
       - market_net
@@ -126,8 +136,10 @@ services:
     environment:
       - REDIS_HOST=corpus_callosum
       - DB_HOST=hippocampus
+      - DB_NAME=rocco_commodities
       - DB_USER=${DB_USER}
       - DB_PASS=${DB_PASS}
+      - DB_PORT=5432
     volumes:                                          
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
@@ -144,7 +156,7 @@ services:
       context: ./visual_cortex/frontend
     container_name: visual_cortex_frontend
     environment:
-      - VITE_API_URL=http://127.0.0.1:8000
+      - VITE_API_URL=http://127.0.0.1:8001
     depends_on:
       - visual_cortex_backend
     networks:

@@ -3,15 +3,10 @@ import json
 import psycopg2
 import time
 from geopy.distance import geodesic
+from utils.db_config import db_config
 
 # --- CONFIGURATION ---
-DB_CONFIG = {
-    "dbname": "rocco_commodities", 
-    "user": "rocco_admin", 
-    "password": "REMOVED", 
-    "host": "hippocampus", 
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 
 # Two Redis connections:
 # r_in: Reads the high-speed firehose (dedicated channel)

@@ -4,15 +4,10 @@ import psycopg2
 import time
 import math
 from datetime import datetime
+from utils.db_config import db_config
 
 # Configuration
-DB_CONFIG = {
-    "dbname": "rocco_commodities", 
-    "user": "rocco_admin", 
-    "password": "REMOVED", 
-    "host": "hippocampus", 
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 r_sky = redis.Redis(host='corpus_callosum', port=6379, db=1)
 r_bus = redis.Redis(host='corpus_callosum', port=6379, db=0)
 

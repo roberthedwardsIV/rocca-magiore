@@ -1,21 +1,20 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      // CRITICAL: Redirects mapbox imports to maplibre
+      // deck.gl / map tooling expect mapbox-gl; we use maplibre instead
       'mapbox-gl': 'maplibre-gl'
     }
   },
   server: {
-    host: true,      
-    port: 3000,      
+    host: true,
+    port: 3000,
     strictPort: true,
     watch: {
-      usePolling: true 
+      usePolling: true
     }
   }
 })

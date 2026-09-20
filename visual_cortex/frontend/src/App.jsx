@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import PanopticonMap from './components/PanopticonMap';
 
-// --- UTILS: Authenticity Generators ---
 const toHex = (str) => {
   let hex = '';
   for(let i = 0; i < str.length && i < 24; i++) {
@@ -52,7 +51,6 @@ export default function App() {
   useEffect(() => { fetchMapData(); }, []);
 
   // --- WEBSOCKET LISTENER ---
-  // --- WEBSOCKET LISTENER ---
   useEffect(() => {
     const ws = new WebSocket(`ws://${window.location.hostname}:8001/ws/stream`);  
       
@@ -66,10 +64,8 @@ export default function App() {
           setRawSignals(prev => [...prev.slice(-49), msg.payload]);
         }
         
-        // Route: Execution Signals (Brainstem) - IGNORED FOR NOW
-        // We leave this block empty so the UI doesn't try to parse the raw JSON trade packet
+        // execution_signals: UI uses formatted system_logs for the execution panel
         else if (msg.channel === 'execution_signals') {
-          // Do nothing. We are relying on the formatted string from system_logs instead.
         }
         
         // Route: System Logs
@@ -199,7 +195,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* NEW: EMBEDDED MATRIX LEVERAGE */}
+                {/* Sensitivity links for the selected asset */}
                 {selectedAsset.matrix_entries && selectedAsset.matrix_entries.length > 0 && (
                   <div className="mt-2 border-t border-[#333] pt-2">
                     <div className="text-[#ffbf00] font-bold mb-1">&gt; SYNAPTIC_LINKS:</div>
@@ -225,7 +221,7 @@ export default function App() {
       {/* ================= RIGHT: BRAINSTEM & MATRIX ================= */}
       <div className="w-96 h-full border-l border-[#333333] flex flex-col z-10 bg-[#000000]/90">
         
-        {/* Brainstem Executions (Now 50% Height) */}
+        {/* Brainstem executions */}
         <div className="h-1/2 flex flex-col p-2 border-b border-[#333333] min-h-0">
           <div className="text-[#ffbf00] border-b border-[#333333] pb-1 mb-2 font-bold flex justify-between">
             <span>&gt; BRAINSTEM_EXECUTION</span> <span className="animate-pulse">●</span>
@@ -238,7 +234,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Sensitivity Matrix (Now 50% Height, bottom border removed) */}
+        {/* Sensitivity matrix */}
         <div className="h-1/2 flex flex-col p-2 min-h-0">
           <div className="text-[#00f2ea] border-b border-[#333333] pb-1 mb-2 font-bold">
             &gt; SENSITIVITY_MATRIX

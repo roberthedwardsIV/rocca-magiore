@@ -31,6 +31,7 @@ include_directories(
     ${OSMIUM_INCLUDE_DIRS}
     ${EXPAT_INCLUDE_DIRS}
     ${CURL_INCLUDE_DIRS}
+    ${CMAKE_SOURCE_DIR}/common/include
     /usr/include/postgresql
     /usr/include/intel_math
     /usr/include

@@ -1,3 +1,45 @@
-aircraftDatabase.csv
+# Secrets & local env
 .env
+.env.*
+!.env.example
+
+# Dependencies & build artifacts
+node_modules/
+**/node_modules/
+__pycache__/
+*.pyc
+*.pyo
+build/
+**/build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+
+# Caches & generated dumps
+cache/
+*.h5
+aircraftDatabase.csv
+**/aircraftDatabase.csv
+ROCCO_MAGGIORE_full.txt
+full_code.txt
+dump.sql
+live_trading.txt
+pack_code.py
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Runtime / local data
 shared_data/ollama
+ibkr_data/
+ibkr_config/jts.ini
+brainstem/logs/
+*.log
+
+# Agent session notes (not for public)
+memory/

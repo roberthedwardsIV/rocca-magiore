@@ -126,7 +126,7 @@ void sync_flights(redisContext* redis) {
                                      key.c_str(), lat, lon, alt, vel, ver, std::time(nullptr));
                         redisCommand(redis, "EXPIRE %s 300", key.c_str());
 
-                        // THE FIX: Broadcast to the UI via PubSub
+                        // Broadcast position to the UI
                         json ui_payload = {
                             {"icao", icao}, {"callsign", call},
                             {"lat", lat}, {"lon", lon}, {"heading", 0} // Placeholder heading

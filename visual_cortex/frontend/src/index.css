@@ -11,11 +11,10 @@ html, body, #root {
   color: #e0e0e0;
   overflow: hidden; 
   font-family: 'JetBrains Mono', Consolas, monospace;
-  /* Global Crosshair */
   cursor: crosshair !important;
 }
 
-/* Force sharp edges globally to kill web-app feel */
+/* Sharp edges */
 * {
   border-radius: 0 !important;
 }
@@ -36,7 +35,7 @@ html, body, #root {
   background: #00f2ea; 
 }
 
-/* --- HOLOGRAPHIC BRUTALISM: OVERLAYS --- */
+/* Overlay effects */
 
 /* Persistent CRT Scanlines & Vignette */
 .scanlines-overlay {

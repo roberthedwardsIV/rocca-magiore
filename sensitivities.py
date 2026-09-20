@@ -1,9 +1,14 @@
+import os
 import psycopg2
 from obspy.clients.fdsn import Client
 from obspy import UTCDateTime
 
-# Connect to your local hippocampus DB
-conn = psycopg2.connect("postgresql://rocco_admin:REMOVED@localhost:5432/rocco_commodities")
+user = os.getenv("DB_USER", "rocco_admin")
+password = os.getenv("DB_PASS", "")
+host = os.getenv("DB_HOST", "localhost")
+port = os.getenv("DB_PORT", "5432")
+dbname = os.getenv("DB_NAME", "rocco_commodities")
+conn = psycopg2.connect(f"postgresql://{user}:{password}@{host}:{port}/{dbname}")
 cur = conn.cursor()
 client = Client("IRIS")
 

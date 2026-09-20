@@ -18,6 +18,7 @@
 #include <atomic>
 #include <hiredis/hiredis.h>
 #include <pqxx/pqxx> 
+#include "db_conn.hpp"
 
 using json = nlohmann::json;
 
@@ -184,7 +185,7 @@ private:
     double current_balance = 0.0;
     double current_pnl = 0.0;
 
-    const std::string tsdb_conn_str = "dbname=market_data user=quant_admin password=REMOVED host=host.docker.internal port=5433";    
+    const std::string tsdb_conn_str = market_tsdb_conn();    
     
     double fetch_latest_price(const std::string& symbol); 
     TSDBMetrics fetch_quant_metrics(const std::string& symbol);

@@ -6,6 +6,7 @@ import asyncpg
 import time
 import re
 from datetime import datetime
+from utils.db_config import db_config as load_db_config
 
 print("[BRAIN] Loading Spacy (Rule-Based)...")
 nlp = spacy.load("en_core_web_sm")
@@ -125,9 +126,9 @@ class RadioNewsSignalProcessor:
             mag = float(mag_ent['text']) if mag_ent else 5.0
 
             signal_list.append({
-                "entity_id": str(db_id),    # THE FIX: Must be the numeric ID as a string
+                "entity_id": str(db_id),
                 "entity_type": e_type,
-                "asset_id": db_id,          # THE FIX: Expose asset_id at the root level
+                "asset_id": db_id,
                 "timestamp": timestamp,
                 "reliability_noise": 1.0,
                 "data": {
@@ -144,7 +145,6 @@ class RadioNewsSignalProcessor:
             if ent['label'] in ["location", "earthquake", "magnitude"]: continue
             
             db_id = ent['id']
-            # FIX 2: Ensure entity_type is NEVER null. Default to 'unknown'.
             e_type = ent.get('label') or "unknown"
             
             cat, sev = self.determine_category_and_severity(e_type, text_context)
@@ -228,10 +228,7 @@ class RadioNewsSignalProcessor:
             print(f"[ERR] Processing Error: {e}")
 
 async def run_processor():
-    db_config = {
-        'user': 'rocco_admin', 'password': 'REMOVED',
-        'database': 'rocco_commodities', 'host': 'hippocampus', 'port': 5432
-    }
+    db_config = load_db_config(asyncpg=True)
     
     processor = RadioNewsSignalProcessor(db_config)
     await processor.initialize()

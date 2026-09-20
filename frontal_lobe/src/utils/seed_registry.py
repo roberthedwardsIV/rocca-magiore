@@ -1,16 +1,11 @@
 import psycopg2
 import csv
 import os
+from utils.db_config import db_config
 import sys
 
 # --- CONFIG ---
-DB_CONFIG = {
-    "dbname": "rocco_commodities",
-    "user": "rocco_admin",
-    "password": "REMOVED",
-    "host": "hippocampus",
-    "port": "5432"
-}
+DB_CONFIG = db_config()
 
 CSV_FILE_PATH = "/app/data/aircraftDatabase.csv"
 

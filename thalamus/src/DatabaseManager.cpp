@@ -1,8 +1,9 @@
 #include "DatabaseManager.hpp"
+#include "db_conn.hpp"
 #include <pqxx/pqxx>
 #include <iostream>
 
-const std::string conn_str = "dbname=rocco_commodities user=rocco_admin password=REMOVED host=hippocampus port=5432";
+static const std::string conn_str = hippocampus_conn();
 
 bool init_database() {
     try {

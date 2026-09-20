@@ -40,7 +40,6 @@ export default function PulseSidebar({ data, assets }) {
             <Database size={10} /> Physical Assets
           </h3>
           <div className="space-y-1">
-            {/* FIX: Added fallback array and .slice() to prevent state mutation */}
             {(assets || []).slice().sort((a,b) => a.op_health - b.op_health).map(asset => {
               const healthPct = Math.round((asset.op_health || 0) * 100);
               const color = healthPct > 90 ? 'bg-green-500' : healthPct > 60 ? 'bg-yellow-500' : 'bg-red-500';
@@ -82,7 +81,6 @@ export default function PulseSidebar({ data, assets }) {
             </tr>
           </thead>
           <tbody>
-            {/* FIX: Added fallback array to protect against null data */}
             {(data?.tickers || []).map(t => (
               <tr key={t.symbol} className="border-b border-gray-800/50 hover:bg-white/5">
                 <td className="py-2 text-cyan font-bold">{t.symbol}</td>

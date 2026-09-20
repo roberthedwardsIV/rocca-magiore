@@ -69,14 +69,14 @@ double ExecutionEngine::fetch_portfolio_covariance(const std::string& new_symbol
     return 0.15; // Baseline covariance factor
 }
 
-// NEW: Fetches the latest known live price directly from TimescaleDB
+// Latest live price from TimescaleDB
 double ExecutionEngine::fetch_latest_price(const std::string& symbol) {
     try {
         // Connect to the market_data_system TSDB
         pqxx::connection C(tsdb_conn_str); 
         pqxx::nontransaction N(C);
         
-        // THE FIX: Query market_1m for the live streaming price, NOT historical_daily
+        // Live streaming bars (market_1m), not historical_daily
         std::string sql = "SELECT close FROM market_1m WHERE symbol = " + N.quote(symbol) + " ORDER BY time DESC LIMIT 1";
         pqxx::result R = N.exec(sql);
         
@@ -121,7 +121,7 @@ void ExecutionEngine::execute_coalesced_signals(const std::string& symbol, const
     double first_val = signals[0].value("expected_return", signals[0].value("z_score", 0.0));
     std::string side = (first_val > 0) ? "BUY" : "SELL"; 
     
-    // THE FIX: Call your new TSDB fetcher!
+    // Resolve execution price from TSDB
     double execution_price = fetch_latest_price(symbol); 
     
     if (execution_price <= 0) {
@@ -375,7 +375,7 @@ std::vector<Order> ExecutionEngine::bracket_order(int parentId, const std::strin
     stop.orderType = "STP";
     stop.auxPrice = stop_price; 
     stop.totalQuantity = Decimal(qty);
-    stop.tif = "GTC"; // THE FIX: Ensure stops persist across days
+    stop.tif = "GTC"; // Persist stops across sessions
     stop.transmit = false;
 
     Order profit;
@@ -385,7 +385,7 @@ std::vector<Order> ExecutionEngine::bracket_order(int parentId, const std::strin
     profit.orderType = "LMT";
     profit.lmtPrice = take_profit;
     profit.totalQuantity = Decimal(qty);
-    profit.tif = "GTC"; // THE FIX: Ensure targets persist across days
+    profit.tif = "GTC"; // Persist targets across sessions
     profit.transmit = true; 
 
     bracket.push_back(parent);
